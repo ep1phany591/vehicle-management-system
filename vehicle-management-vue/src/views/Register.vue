@@ -76,6 +76,7 @@
             type="number"
             id="fleet_id"
             v-model="form.fleet_id"
+            min="1"
             placeholder="请输入车队 ID（数字）"
           />
         </div>
