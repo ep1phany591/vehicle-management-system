@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>公务用车管理系统</title>
+    <style>
+        body { font-family: Arial; margin: 40px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #2c3e50; }
+        .card { 
+            background: white; 
+            border-radius: 8px; 
+            padding: 20px; 
+            margin: 20px 0; 
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button { 
+            background: #3498db; 
+            color: white; 
+            border: none; 
+            padding: 10px 20px; 
+            border-radius: 4px; 
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #2980b9; }
+        .api-test { margin: 20px 0; }
+        .result { 
+            background: #f8f9fa; 
+            padding: 15px; 
+            margin-top: 10px; 
+            border-radius: 4px; 
+            border-left: 4px solid #3498db;
+        }
+        pre { white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚗 公务用车管理系统</h1>
+        
+        <div class="card">
+            <h2>📊 系统状态</h2>
+            <div class="api-test">
+                <button onclick="testHealth()">测试健康检查</button>
+                <div id="healthResult" class="result"></div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>🔐 用户认证</h2>
+            <div class="api-test">
+                <h3>登录测试</h3>
+                <div>
+                    <input type="text" id="phone" placeholder="手机号" value="13800138000">
+                    <input type="password" id="password" placeholder="密码" value="admin123">
+                    <button onclick="testLogin()">测试登录</button>
+                </div>
+                <div id="loginResult" class="result"></div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>🚘 车辆管理</h2>
+            <div class="api-test">
+                <button onclick="getVehicles()">获取车辆列表</button>
+                <div id="vehiclesResult" class="result"></div>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>📝 用车申请</h2>
+            <div class="api-test">
+                <div>
+                    <input type="text" id="applicantId" placeholder="申请人ID" value="admin001">
+                    <input type="text" id="reason" placeholder="事由" value="拜访客户">
+                    <input type="number" id="peopleCount" placeholder="人数" value="3">
+                    <select id="vehicleType">
+                        <option value="small">小车</option>
+                        <option value="business">商务车</option>
+                        <option value="coach">大客车</option>
+                    </select>
+                    <button onclick="submitApplication()">提交申请</button>
+                </div>
+                <div id="applicationResult" class="result"></div>
+                
+                <div style="margin-top: 20px;">
+                    <button onclick="getApplications()">获取所有申请</button>
+                    <div id="applicationsResult" class="result"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000';
+        
+        async function testHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/health`);
+                const data = await response.json();
+                displayResult('healthResult', data);
+            } catch (error) {
+                displayError('healthResult', error);
+            }
+        }
+        
+        async function testLogin() {
+            const phone = document.getElementById('phone').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone, password })
+                });
+                const data = await response.json();
+                displayResult('loginResult', data);
+            } catch (error) {
+                displayError('loginResult', error);
+            }
+        }
+        
+        async function getVehicles() {
+            try {
+                const response = await fetch(`${API_BASE}/api/vehicles`);
+                const data = await response.json();
+                displayResult('vehiclesResult', data);
+            } catch (error) {
+                displayError('vehiclesResult', error);
+            }
+        }
+        
+        async function submitApplication() {
+            const now = new Date();
+            const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+            
+            const application = {
+                applicant_id: document.getElementById('applicantId').value,
+                reason: document.getElementById('reason').value,
+                people_count: parseInt(document.getElementById('peopleCount').value),
+                vehicle_type: document.getElementById('vehicleType').value,
+                start_time: now.toISOString().slice(0, 19).replace('T', ' '),
+                end_time: tomorrow.toISOString().slice(0, 19).replace('T', ' ')
+            };
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/applications`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(application)
+                });
+                const data = await response.json();
+                displayResult('applicationResult', data);
+            } catch (error) {
+                displayError('applicationResult', error);
+            }
+        }
+        
+        async function getApplications() {
+            try {
+                const response = await fetch(`${API_BASE}/api/applications`);
+                const data = await response.json();
+                displayResult('applicationsResult', data);
+            } catch (error) {
+                displayError('applicationsResult', error);
+            }
+        }
+        
+        function displayResult(elementId, data) {
+            const element = document.getElementById(elementId);
+            element.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+        }
+        
+        function displayError(elementId, error) {
+            const element = document.getElementById(elementId);
+            element.innerHTML = `<pre style="color: red;">错误: ${error.message}</pre>`;
+        }
+        
+        // 页面加载时自动测试健康检查
+        window.onload = testHealth;
+    </script>
+</body>
+</html>
