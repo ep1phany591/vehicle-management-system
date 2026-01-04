@@ -15,6 +15,12 @@ instance.interceptors.request.use(
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
+    
+    // 如果是 FormData，不要设置 Content-Type，让浏览器自动设置
+    if (config.data instanceof FormData) {
+      delete config.headers['Content-Type'];
+    }
+    
     return config;
   },
   (error) => Promise.reject(error)
@@ -22,7 +28,10 @@ instance.interceptors.request.use(
 
 // 响应拦截器
 instance.interceptors.response.use(
-  (response) => response.data,
+  (response) => {
+    console.log('📡 响应数据:', response.data);
+    return response.data;
+  },
   (error) => {
     if (error.response) {
       switch (error.response.status) {
@@ -55,7 +64,7 @@ const api = {
     register: (data) => instance.post('/auth/register', data),
   },
   
-  // 用户管理 (关键更新部分)
+  // 用户管理 (重要更新)
   user: {
     // 个人查询/更新
     getProfile: () => instance.get('/users/me'),
@@ -64,13 +73,17 @@ const api = {
     // 管理员：获取所有用户
     getAll: () => instance.get('/users'), 
     
-    // 管理员：更新指定用户 (注意：这里使用 id 拼接路径)
-    // data 包含: { real_name, phone, role, department, position, fleet_id }
+    // 管理员：更新指定用户 - 支持 FormData（用于头像上传）
     updateUser: (id, data) => instance.put(`/users/${id}`, data),
     
     // 管理员：删除指定用户
     delete: (id) => instance.delete(`/users/${id}`),
-    add: (data) => axios.post('/api/users', data),
+    
+    // 管理员：添加用户 - 支持 FormData（用于头像上传）
+    add: (data) => instance.post('/users', data),
+    
+    // 获取单个用户信息（可选）
+    getById: (id) => instance.get(`/users/${id}`)
   },
 
   // 车辆管理
@@ -86,20 +99,20 @@ const api = {
   application: {
     create: (data) => instance.post('/applications', data),
     getMyApplications: (userId) => instance.get(`/applications/my/${userId}`),
-    getAll: (params) => instance.get('/applications', { params }), // 带搜索的分页查询
-    updateStatus: (id, data) => instance.put(`/applications/${id}/status`, data), // 审批
+    getAll: (params) => instance.get('/applications', { params }),
+    updateStatus: (id, data) => instance.put(`/applications/${id}/status`, data),
   },
   
   // 管理员专项数据接口
   admin: {
     getPendingApplications: () => instance.get('/admin/applications/pending'),
-    getStatistics: () => instance.get('/admin/statistics'), // 假设你将来有统计页
+    getStatistics: () => instance.get('/admin/statistics'),
   },
   
   // 车队队长/主管功能
   manager: {
     getPendingMissions: () => instance.get('/manager/missions/pending'),
-    assignTask: (data) => instance.post('/manager/task-assign', data), // 任务指派
+    assignTask: (data) => instance.post('/manager/task-assign', data),
   },
   
   // 司机专项接口

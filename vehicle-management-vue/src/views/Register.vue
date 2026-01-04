@@ -8,6 +8,45 @@
 
       <div class="login-form">
 
+        <!-- 头像上传 -->
+        <div class="form-group avatar-upload">
+          <label for="avatar">头像（可选）</label>
+          <div class="avatar-upload-wrapper">
+            <div class="avatar-preview" @click="triggerFileInput">
+              <img v-if="avatarPreview" :src="avatarPreview" alt="头像预览" class="avatar-image" />
+              <div v-else class="avatar-placeholder">
+                <span>点击上传头像</span>
+                <small>支持 JPG/PNG，建议尺寸 200×200</small>
+              </div>
+            </div>
+            <input
+              type="file"
+              id="avatar"
+              ref="avatarInput"
+              accept="image/jpeg,image/png,image/jpg"
+              @change="handleAvatarChange"
+              style="display: none;"
+            />
+            <div class="avatar-actions">
+              <button
+                type="button"
+                class="avatar-btn"
+                @click="triggerFileInput"
+              >
+                选择图片
+              </button>
+              <button
+                type="button"
+                class="avatar-btn remove-btn"
+                v-if="avatarFile"
+                @click="removeAvatar"
+              >
+                移除
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="form-group name-icon">
           <label for="real_name">真实姓名</label>
           <input
@@ -76,7 +115,6 @@
             type="number"
             id="fleet_id"
             v-model="form.fleet_id"
-            min="1"
             placeholder="请输入车队 ID（数字）"
           />
         </div>
@@ -102,10 +140,9 @@
   </div>
 </template>
 
-
 <script>
 import api from '@/api'; 
-import axios from 'axios'; // 确保引入 axios 进行全局配置
+import axios from 'axios';
 
 export default {
   name: 'Register',
@@ -120,15 +157,13 @@ export default {
         fleet_id: '',
         captcha: '' 
       },
+      avatarFile: null,
+      avatarPreview: null,
       captchaUrl: '', 
       isSubmitting: false
     };
   },
   created() {
-    /**
-     * 
-     * 必须设置为 true，否则浏览器在请求验证码和提交表单时不会发送同一个 Session Cookie
-     */
     axios.defaults.withCredentials = true;
   },
   mounted() {
@@ -136,13 +171,46 @@ export default {
   },
   methods: {
     refreshCaptcha() {
-      /**
-       * 
-       * 1. 优先使用环境变量中的 API 地址，如果没有则使用后端默认的 3000 端口（开发环境）
-       * 2. t=${Date.now()} 是必须的，防止浏览器因缓存而不刷新图片
-       */
-    this.captchaUrl = `/api/auth/captcha?t=${Date.now()}`;
-  this.form.captcha = '';
+      this.captchaUrl = `/api/auth/captcha?t=${Date.now()}`;
+      this.form.captcha = '';
+    },
+
+    triggerFileInput() {
+      this.$refs.avatarInput.click();
+    },
+
+    handleAvatarChange(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      // 验证文件类型和大小
+      const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
+      const maxSize = 5 * 1024 * 1024; // 5MB
+
+      if (!allowedTypes.includes(file.type)) {
+        alert('请上传 JPG 或 PNG 格式的图片');
+        return;
+      }
+
+      if (file.size > maxSize) {
+        alert('图片大小不能超过 5MB');
+        return;
+      }
+
+      this.avatarFile = file;
+
+      // 生成预览
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        this.avatarPreview = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    },
+
+    removeAvatar() {
+      this.avatarFile = null;
+      this.avatarPreview = null;
+      this.$refs.avatarInput.value = '';
     },
 
     async handleRegister() {
@@ -162,25 +230,39 @@ export default {
       this.isSubmitting = true;
 
       try {
-        // 2. 调用注册接口 (注意字段对应)
-        const res = await api.auth.register({
-          realName: this.form.real_name, 
-          phone: this.form.phone,
-          password: this.form.password,
-          department: this.form.department,
-          position: this.form.position,
-          fleet_id: this.form.fleet_id || null,
-          captcha: this.form.captcha, // 传给后端比对
-          role: 'employee'
+        // 使用 FormData 来处理文件上传
+        const formData = new FormData();
+        
+        // 添加表单字段
+        formData.append('realName', this.form.real_name);
+        formData.append('phone', this.form.phone);
+        formData.append('password', this.form.password);
+        formData.append('department', this.form.department);
+        formData.append('position', this.form.position);
+        if (this.form.fleet_id) {
+          formData.append('fleet_id', this.form.fleet_id);
+        }
+        formData.append('captcha', this.form.captcha);
+        formData.append('role', 'employee');
+        
+        // 如果有头像，添加文件
+        if (this.avatarFile) {
+          formData.append('avatar', this.avatarFile);
+        }
+
+        // 使用 axios 直接发送 FormData
+        const res = await axios.post('/api/auth/register', formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
         });
         
-        if (res.success) {
+        if (res.data.success) {
           alert('🎉 注册成功！点击跳转登录。');
           this.$router.push('/login');
         } else {
-          // 针对后端返回的验证码错误进行处理
-          alert('【注册失败】\n' + (res.message || '验证码错误或信息有误'));
-          this.refreshCaptcha(); // 失败后必须强制刷新验证码
+          alert('【注册失败】\n' + (res.data.message || '验证码错误或信息有误'));
+          this.refreshCaptcha();
         }
 
       } catch (error) {
@@ -199,7 +281,6 @@ export default {
 </script>
 
 <style scoped>
-/* 保持原有样式，仅优化细节 */
 .login-page {
   min-height: 100vh;
   display: flex;
@@ -228,8 +309,99 @@ export default {
   font-size: 28px;
 }
 
+/* 头像上传样式 */
+.avatar-upload-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+}
+
+.avatar-preview {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: #f5f5f5;
+  border: 2px dashed #d9d9d9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all 0.3s;
+}
+
+.avatar-preview:hover {
+  border-color: #1890ff;
+  transform: scale(1.02);
+}
+
+.avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-placeholder {
+  text-align: center;
+  color: #999;
+  padding: 15px;
+}
+
+.avatar-placeholder span {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 5px;
+}
+
+.avatar-placeholder small {
+  font-size: 12px;
+  color: #ccc;
+}
+
+.avatar-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.avatar-btn {
+  padding: 8px 16px;
+  background: #f5f5f5;
+  border: 1px solid #d9d9d9;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.3s;
+}
+
+.avatar-btn:hover {
+  background: #1890ff;
+  color: white;
+  border-color: #1890ff;
+}
+
+.remove-btn {
+  background: #ff4d4f;
+  color: white;
+  border-color: #ff4d4f;
+}
+
+.remove-btn:hover {
+  background: #ff7875;
+  border-color: #ff7875;
+}
+
+/* 表单样式 */
 .form-group { margin-bottom: 20px; position: relative; }
-.form-group label { display: block; margin-bottom: 8px; font-weight: 600; font-size: 14px; color: #444; }
+.form-group label { 
+  display: block; 
+  margin-bottom: 8px; 
+  font-weight: 600; 
+  font-size: 14px; 
+  color: #444; 
+}
+
 .form-group input { 
   width: 100%; 
   padding: 12px 15px; 
@@ -238,14 +410,20 @@ export default {
   transition: all 0.3s;
   box-sizing: border-box;
 }
-.form-group input:focus { border-color: #1890ff; outline: none; box-shadow: 0 0 8px rgba(24,144,255,0.2); }
 
-/* 验证码布局：左侧输入框，右侧图片 */
+.form-group input:focus { 
+  border-color: #1890ff; 
+  outline: none; 
+  box-shadow: 0 0 8px rgba(24,144,255,0.2); 
+}
+
 .captcha-wrapper {
   display: flex;
   gap: 12px;
 }
+
 .captcha-wrapper input { flex: 1; }
+
 .captcha-img-box {
   width: 130px;
   height: 45px;
@@ -257,13 +435,13 @@ export default {
   align-items: center;
   overflow: hidden;
   border: 1px solid #ddd;
-  flex-shrink: 0; /* 防止图片被压缩 */
+  flex-shrink: 0;
 }
+
 .captcha-img-box img { width: 100%; height: 100%; object-fit: cover; }
 .loading-text { font-size: 12px; color: #999; }
 
-/* 伪元素图标 */
-.user-icon::after { content: '🆔'; position: absolute; right: 15px; top: 38px; opacity: 0.4; pointer-events: none; }
+/* 图标样式 */
 .name-icon::after { content: '👤'; position: absolute; right: 15px; top: 38px; opacity: 0.4; pointer-events: none; }
 .phone-icon::after { content: '📱'; position: absolute; right: 15px; top: 38px; opacity: 0.4; pointer-events: none; }
 .lock-icon::after { content: '🔒'; position: absolute; right: 15px; top: 38px; opacity: 0.4; pointer-events: none; }
@@ -271,15 +449,32 @@ export default {
 .dept-icon::after { content: '🏢'; position: absolute; right: 15px; top: 38px; opacity: 0.4; pointer-events: none; }
 
 .login-btn {
-  width: 100%; padding: 16px; border: none; border-radius: 12px;
+  width: 100%; 
+  padding: 16px; 
+  border: none; 
+  border-radius: 12px;
   background: linear-gradient(135deg, #1890ff 0%, #096dd9 100%);
-  color: white; font-weight: 600; cursor: pointer; font-size: 16px;
+  color: white; 
+  font-weight: 600; 
+  cursor: pointer; 
+  font-size: 16px;
   margin-top: 10px;
   transition: transform 0.2s;
 }
+
 .login-btn:active { transform: scale(0.98); }
 .login-btn:disabled { background: #ccc; cursor: not-allowed; }
 
-.register-footer { margin-top: 20px; text-align: center; font-size: 14px; }
-.register-footer a { color: #1890ff; font-weight: 600; cursor: pointer; text-decoration: underline; }
+.register-footer { 
+  margin-top: 20px; 
+  text-align: center; 
+  font-size: 14px; 
+}
+
+.register-footer a { 
+  color: #1890ff; 
+  font-weight: 600; 
+  cursor: pointer; 
+  text-decoration: underline; 
+}
 </style>
