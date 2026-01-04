@@ -64,11 +64,14 @@ const api = {
     register: (data) => instance.post('/auth/register', data),
   },
   
-  // 用户管理 (重要更新)
+  // 用户管理
   user: {
-    // 个人查询/更新
+    // 个人中心相关
     getProfile: () => instance.get('/users/me'),
     updateProfile: (data) => instance.put('/users/me', data),
+    changePassword: (data) => instance.put('/users/me/password', data),
+    updateStats: (id, data) => instance.put(`/users/${id}/stats`, data),
+    getUserStats: (id) => instance.get(`/users/${id}/statistics`),
 
     // 管理员：获取所有用户
     getAll: () => instance.get('/users'), 
@@ -82,7 +85,7 @@ const api = {
     // 管理员：添加用户 - 支持 FormData（用于头像上传）
     add: (data) => instance.post('/users', data),
     
-    // 获取单个用户信息（可选）
+    // 获取单个用户信息
     getById: (id) => instance.get(`/users/${id}`)
   },
 
@@ -90,9 +93,6 @@ const api = {
   vehicle: {
     getAll: () => instance.get('/vehicles'),
     getAvailable: (params) => instance.get('/vehicles/available', { params }),
-    // 如果后续需要管理员增加/删除车辆，可以在此扩展
-    // add: (data) => instance.post('/vehicles', data),
-    // delete: (id) => instance.delete(`/vehicles/${id}`),
   },
   
   // 申请/审批管理

@@ -414,6 +414,212 @@ app.post('/api/auth/register', upload.single('avatar'), async (req, res) => {
   }
 });
 
+// ==================== 个人中心模块 ====================
+// 注意：这些路由需要放在 /api/users/:id 之前！
+
+// 1. 获取当前用户信息
+app.get('/api/users/me', authenticateToken, async (req, res) => {
+  try {
+    const [users] = await pool.query(
+      `SELECT 
+        user_id, real_name, phone, role, department, position, 
+        fleet_id, avatar, monthly_trips, total_mileage, created_at
+       FROM users WHERE user_id = ?`,
+      [req.user.user_id]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    
+    res.json({ 
+      success: true, 
+      data: users[0] 
+    });
+  } catch (error) {
+    console.error('获取用户信息失败:', error);
+    res.status(500).json({ success: false, message: '获取用户信息失败' });
+  }
+});
+
+// 2. 更新当前用户信息（普通用户自己修改）- 限制字段
+app.put('/api/users/me', authenticateToken, upload.single('avatar_file'), async (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    const { real_name, phone, department } = req.body; // 移除 position
+    
+    // 获取现有用户信息
+    const [existingUsers] = await pool.query(
+      'SELECT avatar, position, role FROM users WHERE user_id = ?',
+      [userId]
+    );
+    
+    if (existingUsers.length === 0) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    
+    const updates = [];
+    const params = [];
+    
+    // 只允许修改的字段：真实姓名、手机号、部门
+    if (real_name !== undefined && real_name !== null) {
+      updates.push('real_name = ?');
+      params.push(real_name);
+    }
+    
+    if (phone !== undefined && phone !== null) {
+      // 验证手机号格式
+      const phoneRegex = /^1[3-9]\d{9}$/;
+      if (!phoneRegex.test(phone)) {
+        return res.status(400).json({
+          success: false,
+          message: '请输入有效的手机号码'
+        });
+      }
+      updates.push('phone = ?');
+      params.push(phone);
+    }
+    
+    if (department !== undefined && department !== null) {
+      updates.push('department = ?');
+      params.push(department);
+    }
+    
+    // 处理头像上传
+    let avatarPath = null;
+    if (req.file) {
+      avatarPath = `/uploads/avatars/${req.file.filename}`;
+      updates.push('avatar = ?');
+      params.push(avatarPath);
+      
+      // 删除旧头像文件（如果存在且不是默认头像）
+      if (existingUsers[0].avatar && 
+          !existingUsers[0].avatar.includes('fastly.jsdelivr.net') && 
+          existingUsers[0].avatar !== 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg') {
+        const oldAvatarPath = path.join(uploadsDir, existingUsers[0].avatar.replace('/uploads/', ''));
+        if (fs.existsSync(oldAvatarPath)) {
+          fs.unlinkSync(oldAvatarPath);
+        }
+      }
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: '无内容更新' });
+    }
+    
+    params.push(userId);
+    
+    await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE user_id = ?`,
+      params
+    );
+    
+    // 返回更新后的用户信息
+    const [updatedUsers] = await pool.query(
+      `SELECT user_id, real_name, phone, role, department, position, 
+              fleet_id, avatar, monthly_trips, total_mileage, created_at
+       FROM users WHERE user_id = ?`,
+      [userId]
+    );
+    
+    res.json({ 
+      success: true, 
+      message: '个人信息更新成功',
+      data: updatedUsers[0],
+      avatar: avatarPath || existingUsers[0].avatar
+    });
+  } catch (error) {
+    console.error('更新个人信息失败:', error);
+    
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: '头像文件大小不能超过5MB'
+      });
+    }
+    
+    if (error.message === '只支持 JPG、JPEG、PNG 格式的图片') {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+    
+    res.status(500).json({ success: false, message: '更新失败' });
+  }
+});
+
+// 3. 修改密码接口
+app.put('/api/users/me/password', authenticateToken, async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+    const userId = req.user.user_id;
+    
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '原密码和新密码不能为空' 
+      });
+    }
+    
+    if (newPassword.length < 6) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '新密码长度不能少于6位' 
+      });
+    }
+    
+    if (oldPassword === newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '新密码不能与原密码相同' 
+      });
+    }
+    
+    // 获取当前用户密码
+    const [users] = await pool.query(
+      'SELECT password FROM users WHERE user_id = ?',
+      [userId]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: '用户不存在' 
+      });
+    }
+    
+    // 验证原密码
+    const isValid = await bcrypt.compare(oldPassword, users[0].password);
+    if (!isValid) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '原密码错误' 
+      });
+    }
+    
+    // 加密新密码
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // 更新密码
+    await pool.query(
+      'UPDATE users SET password = ? WHERE user_id = ?',
+      [hashedPassword, userId]
+    );
+    
+    res.json({ 
+      success: true, 
+      message: '密码修改成功' 
+    });
+  } catch (error) {
+    console.error('修改密码失败:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: '修改密码失败' 
+    });
+  }
+});
+
 // ==================== 用户管理模块 ====================
 // 1. 获取所有用户列表
 app.get('/api/users', authenticateToken, async (req, res) => {
@@ -431,9 +637,41 @@ app.get('/api/users', authenticateToken, async (req, res) => {
   }
 });
 
-// 2. 更新指定用户
+// 2. 获取单个用户信息（这个要放在参数化路由之前）
+app.get('/api/users/:id', authenticateToken, async (req, res) => {
+  try {
+    const targetUserId = req.params.id;
+    
+    // 如果是 "me"，则应该已经被前面的路由处理了，这里不会执行
+    if (targetUserId === 'me') {
+      return res.status(404).json({ success: false, message: '路由配置错误' });
+    }
+    
+    if (req.user.role !== 'admin' && req.user.user_id !== targetUserId) {
+      return res.status(403).json({ success: false, message: '权限不足' });
+    }
+    
+    const [rows] = await pool.query(
+      `SELECT user_id, real_name, phone, role, department, position, fleet_id, avatar, created_at 
+       FROM users WHERE user_id = ?`,
+      [targetUserId]
+    );
+    
+    if (rows.length === 0) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    
+    res.json({ success: true, data: rows[0] });
+  } catch (error) {
+    console.error('获取用户信息失败:', error);
+    res.status(500).json({ success: false, message: '获取用户信息失败' });
+  }
+});
+
+// 3. 更新指定用户（管理员）
 app.put('/api/users/:id', authenticateToken, upload.single('avatar_file'), async (req, res) => {
   try {
+    // 只有管理员可以修改用户信息
     if (req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: '权限不足' });
     }
@@ -441,7 +679,7 @@ app.put('/api/users/:id', authenticateToken, upload.single('avatar_file'), async
     const targetUserId = req.params.id;
     
     const [existingUsers] = await pool.query(
-      'SELECT avatar FROM users WHERE user_id = ?',
+      'SELECT avatar, role FROM users WHERE user_id = ?',
       [targetUserId]
     );
     
@@ -463,8 +701,9 @@ app.put('/api/users/:id', authenticateToken, upload.single('avatar_file'), async
     });
     
     // 处理头像上传
+    let avatarPath = null;
     if (req.file) {
-      const avatarPath = `/uploads/avatars/${req.file.filename}`;
+      avatarPath = `/uploads/avatars/${req.file.filename}`;
       updates.push('avatar = ?');
       params.push(avatarPath);
       
@@ -514,7 +753,7 @@ app.put('/api/users/:id', authenticateToken, upload.single('avatar_file'), async
   }
 });
 
-// 3. 删除用户
+// 4. 删除用户
 app.delete('/api/users/:id', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -559,7 +798,7 @@ app.delete('/api/users/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 4. 添加用户
+// 5. 添加用户
 app.post('/api/users', authenticateToken, upload.single('avatar_file'), async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -650,29 +889,124 @@ app.post('/api/users', authenticateToken, upload.single('avatar_file'), async (r
   }
 });
 
-// 5. 获取单个用户信息
-app.get('/api/users/:id', authenticateToken, async (req, res) => {
+// 6. 用户统计信息更新接口（可选）
+app.put('/api/users/:id/stats', authenticateToken, async (req, res) => {
   try {
-    const targetUserId = req.params.id;
+    const { monthly_trips, total_mileage } = req.body;
+    const userId = req.params.id;
     
-    if (req.user.role !== 'admin' && req.user.user_id !== targetUserId) {
-      return res.status(403).json({ success: false, message: '权限不足' });
+    // 验证权限（管理员或自己）
+    if (req.user.user_id !== userId && req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: '权限不足' 
+      });
     }
     
-    const [rows] = await pool.query(
-      `SELECT user_id, real_name, phone, role, department, position, fleet_id, avatar, created_at 
-       FROM users WHERE user_id = ?`,
+    const updates = [];
+    const params = [];
+    
+    if (monthly_trips !== undefined) {
+      updates.push('monthly_trips = ?');
+      params.push(monthly_trips);
+    }
+    
+    if (total_mileage !== undefined) {
+      updates.push('total_mileage = ?');
+      params.push(total_mileage);
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '无内容更新' 
+      });
+    }
+    
+    params.push(userId);
+    
+    await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE user_id = ?`,
+      params
+    );
+    
+    res.json({ 
+      success: true, 
+      message: '统计信息更新成功' 
+    });
+  } catch (error) {
+    console.error('更新统计信息失败:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: '更新统计信息失败' 
+    });
+  }
+});
+
+// 7. 管理员更新用户信息（包括职位、角色等）
+app.put('/api/users/:id/admin', authenticateToken, requireRole('admin'), upload.single('avatar_file'), async (req, res) => {
+  try {
+    const targetUserId = req.params.id;
+    const { real_name, phone, department, position, role, fleet_id } = req.body;
+    
+    // 获取现有用户信息
+    const [existingUsers] = await pool.query(
+      'SELECT avatar FROM users WHERE user_id = ?',
       [targetUserId]
     );
     
-    if (rows.length === 0) {
+    if (existingUsers.length === 0) {
       return res.status(404).json({ success: false, message: '用户不存在' });
     }
     
-    res.json({ success: true, data: rows[0] });
+    const updates = [];
+    const params = [];
+    const fields = { real_name, phone, department, position, role, fleet_id };
+    
+    Object.keys(fields).forEach(key => {
+      if (fields[key] !== undefined && fields[key] !== null) {
+        updates.push(`${key} = ?`);
+        params.push(fields[key]);
+      }
+    });
+    
+    // 处理头像上传
+    let avatarPath = null;
+    if (req.file) {
+      avatarPath = `/uploads/avatars/${req.file.filename}`;
+      updates.push('avatar = ?');
+      params.push(avatarPath);
+      
+      // 删除旧头像文件（如果存在且不是默认头像）
+      if (existingUsers[0].avatar && 
+          !existingUsers[0].avatar.includes('fastly.jsdelivr.net') && 
+          existingUsers[0].avatar !== 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg') {
+        const oldAvatarPath = path.join(uploadsDir, existingUsers[0].avatar.replace('/uploads/', ''));
+        if (fs.existsSync(oldAvatarPath)) {
+          fs.unlinkSync(oldAvatarPath);
+        }
+      }
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: '无内容更新' });
+    }
+    
+    params.push(targetUserId);
+    
+    await pool.query(
+      `UPDATE users SET ${updates.join(', ')} WHERE user_id = ?`,
+      params
+    );
+    
+    res.json({ 
+      success: true, 
+      message: '用户信息更新成功',
+      avatar: avatarPath || existingUsers[0].avatar
+    });
   } catch (error) {
-    console.error('获取用户信息失败:', error);
-    res.status(500).json({ success: false, message: '获取用户信息失败' });
+    console.error('管理员更新用户信息失败:', error);
+    res.status(500).json({ success: false, message: '更新失败' });
   }
 });
 
