@@ -375,6 +375,7 @@ export default {
       }
     },
     
+    
     // 加载申请详情
     async loadApplicationDetail() {
       this.loading = true;

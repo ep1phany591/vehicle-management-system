@@ -459,7 +459,6 @@
         
         <div class="modal-footer">
           <button @click="closeMissionDetail" class="cancel-btn">关闭</button>
-          <button @click="editMission(selectedMission)" class="edit-btn">编辑</button>
           <button 
             v-if="selectedMission && selectedMission.status === 'assigned'"
             @click="assignVehicle(selectedMission)"
@@ -806,10 +805,7 @@ export default {
       this.selectedMission = null;
     },
     
-    editMission(mission) {
-      alert('编辑功能开发中: ' + mission.reason);
-      // 实际开发中这里会跳转到编辑页面
-    },
+    
     
     
     // 批量操作

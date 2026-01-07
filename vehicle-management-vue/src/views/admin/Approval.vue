@@ -1009,7 +1009,7 @@ export default {
     
     // 查看申请详情
     viewApplication(app) {
-      this.$router.push(`/admin/application/${app.application_id}`);
+      this.$router.push(`/application/${app.application_id}`);
     },
     
     // 其他方法
