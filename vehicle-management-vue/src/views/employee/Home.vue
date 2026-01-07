@@ -10,7 +10,11 @@
       <div class="user-info">
         <div class="user-avatar">
           <!-- 确保头像存在，否则显示默认头像 -->
-          <img :src="user.avatar || 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" alt="头像">
+         <img 
+            :src="user.avatar ? getAvatarUrl(user.avatar) : 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" 
+            alt="头像" 
+            class="avatar"
+          >
         </div>
         <div class="user-details">
           <!-- 确保姓名存在，否则显示默认值 -->
@@ -152,6 +156,23 @@ export default {
       data: []
     });
 
+        const getAvatarUrl = (path) => {
+      if (!path) return 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg';
+  
+  // 如果已经是完整路径，直接返回
+  if (path.startsWith('http')) return path;
+  
+  // 处理不同的路径格式
+  const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
+  
+  // 如果路径以斜杠开头，直接拼接
+  if (path.startsWith('/')) {
+    return baseUrl + path;
+  } else {
+    // 否则按默认头像路径拼接
+    return `${baseUrl}/uploads/avatars/${path}`;
+  }
+    };
     // 计算属性 - 会自动更新
     const stats = computed(() => result.value.stats || {
       total: 0,
@@ -364,7 +385,8 @@ export default {
       goToProfile,
       viewApplication,
       cancelApplication,
-      logout
+      logout,
+      getAvatarUrl
     };
   }
 };

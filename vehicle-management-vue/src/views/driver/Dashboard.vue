@@ -7,7 +7,11 @@
         <span class="status-text">{{ getStatusText(currentStatus) }}</span>
       </div>
       <div class="driver-info">
-        <img :src="user.avatar" alt="司机头像" class="driver-avatar">
+        <img 
+            :src="user.avatar ? getAvatarUrl(user.avatar) : 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" 
+            alt="头像" 
+            class="avatar"
+          >
         <div class="driver-name">{{ user.real_name }}</div>
       </div>
     </div>
@@ -710,7 +714,14 @@ export default {
     reportLocation() {
       alert('位置上报功能（可集成GPS定位）');
     },
-    
+    getAvatarUrl(avatarPath) {
+      if (!avatarPath) return '';
+      // 如果已经是完整URL，直接返回
+      if (avatarPath.startsWith('http')) return avatarPath;
+      // 否则拼接基础URL
+      const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
+      return baseUrl + avatarPath;
+    },
     reportIssue() {
       const issue = prompt('请描述遇到的问题：');
       if (issue) {
