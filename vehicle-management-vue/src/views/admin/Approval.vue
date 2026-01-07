@@ -235,14 +235,7 @@
                       >
                         👁️ 详情
                       </button>
-                      <button 
-                        v-if="['approved', 'assigned'].includes(app.status)"
-                        @click="assignApplication(app)"
-                        class="action-btn assign"
-                        title="分配车辆"
-                      >
-                        🚗 分配
-                      </button>
+                      
                     </div>
                   </td>
                 </tr>
@@ -955,14 +948,7 @@ export default {
     },
     
     // 分配操作
-    assignApplication(app) {
-      this.selectedApp = app;
-      this.selectedFleetId = null;
-      this.selectedVehicleId = null;
-      this.selectedDriverId = null;
-      this.assignError = '';
-      this.showAssignModal = true;
-    },
+    
     
     selectFleet(fleetId) {
       this.selectedFleetId = fleetId;

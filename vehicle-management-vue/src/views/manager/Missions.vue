@@ -92,12 +92,7 @@
               >
                 分配司机
               </button>
-              <button 
-                @click="viewMissionDetail(mission)"
-                class="detail-btn"
-              >
-                查看详情
-              </button>
+              
             </div>
           </div>
         </div>
@@ -141,13 +136,8 @@
               <span class="value">{{ formatTime(mission.start_time) }}</span>
             </div>
           </div>
-          <div class="item-actions">
-            <button 
-              @click="viewMissionDetail(mission)"
-              class="view-btn"
-            >
-              查看
-            </button>
+          <div class="item-details">
+            
             <button 
               v-if="mission.status === 'assigned'"
               @click="reassignMission(mission)"
@@ -215,12 +205,7 @@
             >
               联系司机
             </button>
-            <button 
-              @click="viewMissionDetail(mission)"
-              class="detail-btn"
-            >
-              查看详情
-            </button>
+           
           </div>
         </div>
       </div>
@@ -267,43 +252,7 @@
       </div>
     </div>
 
-    <!-- 任务统计 -->
-    <div class="stats-section">
-      <div class="section-header">
-        <h3>车队统计</h3>
-        <span class="stats-date">{{ currentDate }}</span>
-      </div>
-      <div class="stats-cards">
-        <div class="stat-card">
-          <div class="stat-icon">📊</div>
-          <div class="stat-content">
-            <div class="stat-value">{{ stats.totalMissions }}</div>
-            <div class="stat-label">总任务数</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">✅</div>
-          <div class="stat-content">
-            <div class="stat-value">{{ stats.completedMissions }}</div>
-            <div class="stat-label">已完成</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">🚗</div>
-          <div class="stat-content">
-            <div class="stat-value">{{ stats.availableDrivers }}</div>
-            <div class="stat-label">可用司机</div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon">⏱️</div>
-          <div class="stat-content">
-            <div class="stat-value">{{ stats.onTimeRate }}%</div>
-            <div class="stat-label">准时率</div>
-          </div>
-        </div>
-      </div>
-    </div>
+    
   </div>
 </template>
 
@@ -659,9 +608,7 @@ export default {
       }
     },
     
-    viewMissionDetail(mission) {
-      this.$router.push(`/application/${mission.application_id}`);
-    },
+    
     
     refreshData() {
       this.loadMissions();
@@ -1317,7 +1264,7 @@ export default {
 }
 
 .item-actions {
-  display: flex;
+ 
   gap: 10px;
 }
 

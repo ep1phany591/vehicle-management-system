@@ -67,18 +67,12 @@ const routes = [
     path: '/admin/statistics',
     name: 'AdminStatistics',
     component: () => import('../views/admin/Statistics.vue'),
-    meta: { requiresAuth: true, roles: ['admin'] }
+    meta: { requiresAuth: true, roles: ['admin','leader'] }
   },
   {
   path: '/admin/approval',
   name: 'AdminApproval',
   component: () => import('../views/admin/Approval.vue'),
-  meta: { requiresAuth: true, roles: ['admin'] }
-  },
-  {
-  path: '/admin/missions',
-  name: 'AdminMissions',
-  component: () => import('../views/admin/Missions.vue'),
   meta: { requiresAuth: true, roles: ['admin'] }
   },
   {
@@ -140,10 +134,10 @@ const routes = [
     meta: { requiresAuth: true, roles: ['leader'] }
   },
   {
-    path: '/leader/statistics',
-    name: 'LeaderStatistics',
-    component: () => import('../views/leader/Statistics.vue'),
-    meta: { requiresAuth: true, roles: ['leader'] }
+  path: '/admin/missions',
+  name: 'AdminMissions',
+  component: () => import('../views/leader/Missions.vue'),
+  meta: { requiresAuth: true, roles: ['leader'] }
   },
   
   // 调试页面

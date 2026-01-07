@@ -45,7 +45,7 @@ v<template>
               <div class="stat-label">可用车辆</div>
             </div>
           </div>
-          <div class="stat-card" @click="$router.push('/admin/missions')">
+          <div class="stat-card" @click="$router.push('/admin/approval')">
             <div class="stat-icon today">
               <span>📅</span>
             </div>
@@ -59,8 +59,8 @@ v<template>
               <span>📊</span>
             </div>
             <div class="stat-info">
-              <div class="stat-value">{{ stats.monthMissions }}</div>
-              <div class="stat-label">本月任务</div>
+              
+              <div class="stat-label">本月完成统计</div>
             </div>
           </div>
         </div>
@@ -168,7 +168,7 @@ v<template>
                 </div>
                 <span class="action-text">用户管理</span>
               </div>
-              <div class="action-item" @click="$router.push('/admin/missions')">
+              <div class="action-item" @click="$router.push('/admin/approval')">
                 <div class="action-icon mission">
                   <span>📋</span>
                 </div>

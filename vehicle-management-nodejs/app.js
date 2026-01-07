@@ -293,6 +293,56 @@ const upload = multer({
     }
   }
 });
+// ==================== 司机个人统计 ====================
+// GET /api/drivers/:user_id/stats
+app.get('/api/drivers/:user_id/stats', authenticateToken, async (req, res) => {
+  const userId = String(req.params.user_id);
+  const authUserId = String(req.user.user_id);
+
+  // 🔐 只能查自己，管理员例外
+  if (authUserId !== userId && req.user.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      message: '无权访问该司机统计'
+    });
+  }
+
+  try {
+    const [[row]] = await pool.query(
+      `
+      SELECT 
+        IFNULL(monthly_trips, 0) AS totalMissions,
+        IFNULL(total_mileage, 0) AS totalMileage
+      FROM users
+      WHERE user_id = ?
+      `,
+      [userId]
+    );
+
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        message: '司机不存在'
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        totalMissions: row.totalMissions,
+        totalMileage: row.totalMileage
+      }
+    });
+
+  } catch (err) {
+    console.error('🚨 司机统计查询失败:', err);
+    return res.status(500).json({
+      success: false,
+      message: '服务器错误'
+    });
+  }
+});
+
 
 // 用户注册
 app.post('/api/auth/register', upload.single('avatar'), async (req, res) => {
@@ -413,6 +463,60 @@ app.post('/api/auth/register', upload.single('avatar'), async (req, res) => {
     });
   }
 });
+// 直接在 app.js 中添加这个简单的 GET 接口
+/**
+ * 出车统计接口
+ * GET /api/statistics/trips
+ */
+// 获取运营统计数据
+// 获取运营统计数据
+// 统计接口：出车数据汇总
+// 统计接口：出车数据汇总
+// 运营统计接口
+// 运营统计接口
+// 运营统计接口 - 直接从 users 表读取统计数据
+app.get('/api/statistics/trips', async (req, res) => {
+  try {
+    // 1️⃣ 司机统计
+    const driverSql = `
+      SELECT 
+        u.user_id AS driver_id, 
+        u.real_name AS driver_name, 
+        f.fleet_name AS fleet_name,
+        u.monthly_trips AS trip_count, 
+        u.total_mileage AS total_mileage
+      FROM users u
+      LEFT JOIN fleets f ON u.fleet_id = f.fleet_id
+      WHERE u.role = 'driver'
+      ORDER BY u.total_mileage DESC
+    `
+
+    // 2️⃣ 车队统计（只统计司机）
+    const fleetSql = `
+      SELECT 
+        f.fleet_id, 
+        f.fleet_name, 
+        SUM(u.monthly_trips) AS trip_count, 
+        SUM(u.total_mileage) AS total_mileage
+      FROM users u
+      INNER JOIN fleets f ON u.fleet_id = f.fleet_id
+      WHERE u.role = 'driver'
+      GROUP BY f.fleet_id, f.fleet_name
+      ORDER BY total_mileage DESC
+    `
+
+    const [drivers] = await pool.query(driverSql)
+    const [fleets] = await pool.query(fleetSql)
+
+    res.json({
+      success: true,
+      data: { fleets, drivers }
+    })
+  } catch (error) {
+    console.error('获取用户统计数据失败:', error)
+    res.status(500).json({ success: false, message: '服务器内部错误' })
+  }
+})
 
 // ==================== 个人中心模块 ====================
 // 注意：这些路由需要放在 /api/users/:id 之前！
@@ -2165,7 +2269,7 @@ app.get('/api/applications', authenticateToken, async (req, res) => {
     ===================== */
 
     // 管理员：看所有
-    if (user.role === 'admin') {
+    if (user.role === 'admin'||user.role === 'leader') {
       // 不加额外条件
     }
 
@@ -2215,8 +2319,31 @@ app.get('/api/applications', authenticateToken, async (req, res) => {
     });
   }
 });
+// 新增统计接口，专门给 Leader 工作台使用
+// 修改 app.js
+// 后端：统计今日出车数量接口
+app.get('/api/admin/today-stats', authenticateToken, async (req, res) => {
+    try {
+        // 使用 CURDATE() 获取数据库当前的日期
+        const sql = `
+            SELECT COUNT(*) as count 
+            FROM applications 
+            WHERE DATE(actual_start_time) = CURDATE() 
+            AND status IN ('assigned', 'confirmed', 'in_progress', 'completed')
+        `;
+        
+        // 注意：根据你的 app.js 结构，使用的是 pool.execute 或 db.query
+        const [rows] = await pool.execute(sql);
 
-
+        res.json({
+            success: true,
+            todayMissions: rows[0].count || 0
+        });
+    } catch (error) {
+        console.error('❌ 统计查询失败:', error);
+        res.status(500).json({ success: false, message: '服务器内部错误' });
+    }
+});
 // ==================== 管理员模块 ====================
 // 获取待审批申请（管理员专用）
 // ==================== 车队队长模块 ====================
@@ -3575,7 +3702,7 @@ app.post('/api/admin/approve-application/:id', authenticateToken, requireRole('a
 });
 
 // 管理员获取今日任务
-app.get('/api/admin/today-missions', authenticateToken, requireRole('admin'), async (req, res) => {
+app.get('/api/admin/today-missions', authenticateToken, requireRole('admin','leader'), async (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
     console.log('📋 [管理员] 获取今日任务，日期:', today);

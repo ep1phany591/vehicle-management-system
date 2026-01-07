@@ -67,7 +67,7 @@
             </div>
             <div class="stat-details">
               <div class="stat-value">{{ fleetStats.activeMissions || 0 }}</div>
-              <div class="stat-label">进行中任务</div>
+              <div class="stat-label">已分配任务</div>
             </div>
           </div>
           
@@ -248,12 +248,7 @@
                 <span class="action-text">车辆管理</span>
               </div>
               
-              <div class="action-item" @click="goToSchedule">
-                <div class="action-icon schedule">
-                  <span>📅</span>
-                </div>
-                <span class="action-text">排班管理</span>
-              </div>
+              
             </div>
           </div>
 
