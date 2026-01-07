@@ -2,7 +2,11 @@
   <div class="leader-dashboard">
     <div class="header">
       <div class="user-info">
-        <img :src="user.avatar || defaultAvatar" alt="头像" class="avatar">
+        <img 
+            :src="user.avatar ? getAvatarUrl(user.avatar) : 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" 
+            alt="头像" 
+            class="avatar"
+          >
         <div class="user-details">
           <h3>{{ user.real_name }}</h3>
           <p>领导工作台</p>
@@ -55,6 +59,16 @@ export default {
     this.loadTodayStats();
   },
   methods: {
+   
+  getAvatarUrl(avatarPath) {
+      if (!avatarPath) return '';
+      // 如果已经是完整URL，直接返回
+      if (avatarPath.startsWith('http')) return avatarPath;
+      // 否则拼接基础URL
+      const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
+      return baseUrl + avatarPath;
+    },
+
     loadUserInfo() {
       const userData = localStorage.getItem('user');
       if (userData) {

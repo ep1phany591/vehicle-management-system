@@ -1535,11 +1535,11 @@ app.put('/api/vehicles/:id/status', authenticateToken, async (req, res) => {
     }
     
     // 验证状态值是否有效 - 根据数据库注释
-    const validStatuses = ['available', 'in_use', 'maintenance', 'reserved'];
+    const validStatuses = ['available', 'in_use', 'maintenance', 'reserved','unavailable'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: '无效的状态值，可选值: available, in_use, maintenance, reserved'
+        message: '无效的状态值，可选值: available, in_use, maintenance, reserved, unavailable'
       });
     }
     
@@ -2108,50 +2108,41 @@ app.put('/api/applications/:id/status', authenticateToken, async (req, res) => {
     let updateParams = [status];
     
     if (user.role === 'admin') {
-      // 管理员可以更新任何状态
       canUpdate = true;
-    } else if (user.user_id === application.applicant_id&&status === 'cancelled') {
-      // 申请人只能取消待审批的申请
+    } else if (user.user_id === application.applicant_id && status === 'cancelled') {
       canUpdate = application.status === 'pending';
-    }else if (user.role === 'driver') {
-  if (application.assigned_driver_id !== user.user_id) {
-    return res.status(403).json({ success: false, message: '非本人任务' });
-  }
+    } else if (user.role === 'driver') {
+      if (application.assigned_driver_id !== user.user_id) {
+        return res.status(403).json({ success: false, message: '非本人任务' });
+      }
 
-  // 接单
-  if (application.status === 'assigned' && status === 'confirmed') {
-    canUpdate = true;
-  }
+      // 1. 接单逻辑
+      if (application.status === 'assigned' && status === 'confirmed') {
+        canUpdate = true;
+      }
+      // 2. 拒绝逻辑 (这里走下面的事务分支)
+      else if (status === 'rejected') {
+        canUpdate = true; // 允许进入下面的拒绝处理逻辑
+      }
+      // 3. 开始任务逻辑
+      else if (application.status === 'confirmed' && status === 'in_progress') {
+        canUpdate = true;
+        updateFields.push('actual_start_time = NOW()');
+      }
+      // 4. 完成任务逻辑 ✅ 核心修改点
+      else if (application.status === 'in_progress' && status === 'completed') {
+        canUpdate = true;
+        updateFields.push('actual_end_time = NOW()');
+        updateFields.push('completed_time = NOW()');
+        updateFields.push('actual_mileage = ?');
+        updateParams.push(actual_mileage || 0);
 
-  // 禁止 rejected
-  else if (status === 'rejected') {
-    return res.status(400).json({
-      success: false,
-      message: '司机拒绝请使用【拒绝任务】接口'
-    });
-  }
-
-  // 开始任务
-  else if (application.status === 'confirmed' && status === 'in_progress') {
-    canUpdate = true;
-    updateFields.push('actual_start_time = NOW()');
-  }
-
-  // 完成任务 ✅ 最终正确版
-  else if (application.status === 'in_progress' && status === 'completed') {
-    canUpdate = true;
-    updateFields.push('actual_end_time = NOW()');
-	 updateFields.push('completed_time = NOW()');   // ✅ 新增这一行
-    updateFields.push('actual_mileage = ?');
-    updateParams.push(actual_mileage || 0);
-
-    if (remarks) {
-      updateFields.push('remarks = ?');
-      updateParams.push(remarks);
+        if (remarks) {
+          updateFields.push('remarks = ?');
+          updateParams.push(remarks);
+        }
+      }
     }
-  }
-}
-
     
     if (!canUpdate) {
       return res.status(403).json({
@@ -2159,88 +2150,65 @@ app.put('/api/applications/:id/status', authenticateToken, async (req, res) => {
         message: '无权更新此申请状态'
       });
     }
-    
+
     // 添加更新时间
     updateFields.push('updated_at = NOW()');
-    
-    // 如果是拒绝任务，还需要释放车辆和司机
-    if (status === 'rejected' && user.role === 'driver') {
-      // 开启事务
-      const connection = await pool.getConnection();
-      await connection.beginTransaction();
-      
-      try {
-        // 1. 更新申请状态
+
+    // --- 开始执行数据库更新 ---
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // 执行 application 表的状态更新
+      const sql = `UPDATE applications SET ${updateFields.join(', ')} WHERE application_id = ?`;
+      await connection.query(sql, [...updateParams, applicationId]);
+
+      // 情况 A: 司机完成任务 -> 累加里程和单数 ✅
+      if (user.role === 'driver' && status === 'completed') {
         await connection.query(
-          `UPDATE applications SET ${updateFields.join(', ')} WHERE application_id = ?`,
-          [...updateParams, applicationId]
+          `UPDATE users 
+           SET total_mileage = total_mileage + ?, 
+               monthly_trips = monthly_trips + 1,
+               updated_at = NOW()
+           WHERE user_id = ?`,
+          [parseFloat(actual_mileage) || 0, user.user_id]
         );
-        
-        // 2. 释放车辆（如果已分配）
+      }
+
+      // 情况 B: 司机拒绝任务 -> 释放资源 (保持你原来的逻辑不变)
+      else if (user.role === 'driver' && status === 'rejected') {
+        // 释放车辆
         if (application.assigned_vehicle_id) {
           await connection.query(
-            `UPDATE vehicles 
-             SET status = 'available',
-                 current_driver_id = NULL,
-                 updated_at = NOW()
-             WHERE vehicle_id = ?`,
+            `UPDATE vehicles SET status = 'available', current_driver_id = NULL, updated_at = NOW() WHERE vehicle_id = ?`,
             [application.assigned_vehicle_id]
           );
         }
-        
-        // 3. 更新司机状态（如果在驾驶中）
-        if (application.assigned_driver_id) {
-          // 检查司机是否有其他任务
-          const [otherTasks] = await connection.query(
-            `SELECT COUNT(*) as count FROM applications 
-             WHERE assigned_driver_id = ? 
-             AND status IN ('assigned', 'confirmed', 'in_progress')
-             AND application_id != ?`,
-            [application.assigned_driver_id, applicationId]
+        // 释放司机状态
+        const [otherTasks] = await connection.query(
+          `SELECT COUNT(*) as count FROM applications WHERE assigned_driver_id = ? AND status IN ('assigned', 'confirmed', 'in_progress') AND application_id != ?`,
+          [user.user_id, applicationId]
+        );
+        if (otherTasks[0].count === 0) {
+          await connection.query(
+            `UPDATE drivers SET driver_status = 'on_duty', updated_at = NOW() WHERE user_id = ?`,
+            [user.user_id]
           );
-          
-          if (otherTasks[0].count === 0) {
-            // 没有其他任务，恢复为在岗状态
-            await connection.query(
-              `UPDATE drivers 
-               SET driver_status = 'on_duty',
-                   updated_at = NOW()
-               WHERE user_id = ?`,
-              [application.assigned_driver_id]
-            );
-          }
         }
-        
-        // 提交事务
-        await connection.commit();
-        connection.release();
-        
-        console.log('✅ 任务已拒绝，相关资源已释放');
-        
-        res.json({
-          success: true,
-          message: '任务已拒绝'
-        });
-        
-      } catch (transactionError) {
-        // 回滚事务
-        await connection.rollback();
-        connection.release();
-        throw transactionError;
       }
-    } else {
-      // 其他状态更新（不需要事务）
-      updateParams.push(applicationId);
-      
-      await pool.query(
-        `UPDATE applications SET ${updateFields.join(', ')} WHERE application_id = ?`,
-        updateParams
-      );
+
+      await connection.commit();
+      connection.release();
       
       res.json({
         success: true,
-        message: '申请状态更新成功'
+        message: status === 'completed' ? '任务已完成，数据已统计' : '申请状态更新成功'
       });
+
+    } catch (transactionError) {
+      await connection.rollback();
+      connection.release();
+      throw transactionError;
     }
     
   } catch (error) {

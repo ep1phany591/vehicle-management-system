@@ -410,31 +410,39 @@ export default {
   },
   computed: {
     filteredVehicles() {
-      return this.vehicles.filter(vehicle => {
-        // 搜索筛选
-        if (this.searchKeyword) {
-          const keyword = this.searchKeyword.toLowerCase();
-          const matchLicense = vehicle.license_plate.toLowerCase().includes(keyword);
-          const matchBrand = vehicle.brand?.toLowerCase().includes(keyword);
-          const matchModel = vehicle.model?.toLowerCase().includes(keyword);
-          if (!matchLicense && !matchBrand && !matchModel) {
-            return false;
-          }
-        }
-        
-        // 状态筛选
-        if (this.filterStatus !== 'all' && vehicle.status !== this.filterStatus) {
-          return false;
-        }
-        
-        // 类型筛选
-        if (this.filterType !== 'all' && vehicle.vehicle_type !== this.filterType) {
-          return false;
-        }
-        
-        return true;
-      });
+  return this.vehicles.filter(vehicle => {
+    // 1. 搜索筛选
+    if (this.searchKeyword) {
+      const keyword = this.searchKeyword.trim().toLowerCase();
+      
+      // 安全获取各个字段的值，防止为 null 时报错
+      const lp = (vehicle.license_plate || '').toLowerCase();
+      const br = (vehicle.brand || '').toLowerCase();
+      const mo = (vehicle.model || '').toLowerCase();
+
+      const matchLicense = lp.includes(keyword);
+      const matchBrand = br.includes(keyword);
+      const matchModel = mo.includes(keyword);
+
+      // 如果三者都不匹配，则过滤掉
+      if (!matchLicense && !matchBrand && !matchModel) {
+        return false;
+      }
     }
+    
+    // 2. 状态筛选 (保持不变)
+    if (this.filterStatus !== 'all' && vehicle.status !== this.filterStatus) {
+      return false;
+    }
+    
+    // 3. 类型筛选 (保持不变)
+    if (this.filterType !== 'all' && vehicle.vehicle_type !== this.filterType) {
+      return false;
+    }
+    
+    return true;
+  });
+}
   },
   mounted() {
     this.loadUserInfo();

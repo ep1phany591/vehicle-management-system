@@ -162,7 +162,6 @@ export default {
         inProgressCount: 0,
         completedCount: 0
       },
-      // 这里的初始数据设为0，通过 API 获取
       monthlyStats: {
         totalMissions: 0,
         totalMileage: 0
@@ -190,7 +189,7 @@ export default {
   mounted() {
     this.loadUserInfo();
     this.loadMissions();
-    this.loadDriverStats(); // 初始化时加载数据库统计
+    this.loadDriverStats(); 
   },
   methods: {
     loadUserInfo() {
@@ -198,45 +197,27 @@ export default {
       if (userData) this.user = JSON.parse(userData);
     },
 
-    // 核心新增：从数据库 users 表加载统计数据
-    // 在 Missions.vue 的 loadDriverStats 方法中修改地址
-async loadDriverStats() {
-  try {
-    const userData = localStorage.getItem('user');
-    const token = localStorage.getItem('token');
-    if (!userData || !token) return;
-
-    const user = JSON.parse(userData);
-
-    // ⚠️ 关键：用 user_id，不是 id
-    const response = await fetch(
-      `http://localhost:3000/api/drivers/${user.user_id}/stats`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`
+    // 1. 获取统计数据 (同步 app.js 逻辑)
+    async loadDriverStats() {
+      try {
+        const userData = localStorage.getItem('user');
+        const token = localStorage.getItem('token');
+        if (!userData || !token) return;
+        const user = JSON.parse(userData);
+        const response = await fetch(`http://localhost:3000/api/drivers/${user.user_id}/stats`, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const result = await response.json();
+        if (result.success && result.data) {
+          this.monthlyStats.totalMissions = result.data.totalMissions;
+          this.monthlyStats.totalMileage = result.data.totalMileage;
         }
+      } catch (err) {
+        console.error('加载司机统计失败:', err);
       }
-    );
-
-    const result = await response.json();
-    console.log('司机统计接口返回:', result);
-
-    if (!result.success || !result.data) {
-      console.warn('司机统计获取失败');
-      return;
-    }
-
-    // ✅ 精准赋值
-    this.monthlyStats.totalMissions = result.data.totalMissions;
-    this.monthlyStats.totalMileage = result.data.totalMileage;
-
-  } catch (err) {
-    console.error('加载司机统计失败:', err);
-  }
-}
-
-,
+    },
     
+    // 2. 加载任务列表 (使用你确认成功的路径)
     async loadMissions() {
       this.loading = true;
       try {
@@ -244,11 +225,9 @@ async loadDriverStats() {
         const response = await fetch('http://localhost:3000/api/driver/missions', {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (response.ok) {
-          const result = await response.json();
-          if (result.success) {
-            this.missions = result.data || [];
-          }
+        const result = await response.json();
+        if (result.success) {
+          this.missions = result.data || [];
         }
       } catch (error) {
         console.error('加载任务失败:', error);
@@ -256,59 +235,120 @@ async loadDriverStats() {
         this.loading = false;
       }
     },
-    
-    updateStats(missions) {
-      this.stats.assignedCount = missions.filter(m => m.status === 'assigned').length;
-      this.stats.confirmedCount = missions.filter(m => m.status === 'confirmed').length;
-      this.stats.inProgressCount = missions.filter(m => m.status === 'in_progress').length;
-      this.stats.completedCount = missions.filter(m => m.status === 'completed').length;
-    },
-    
-    filterMissionsByStatus(status = this.filterStatus) {
-      if (status === 'all') {
-        this.filteredMissions = [...this.missions];
-      } else {
-        this.filteredMissions = this.missions.filter(mission => mission.status === status);
+
+    // 3. 接受任务逻辑 (从 Dashboard 迁移并适配)
+    async acceptMission(mission) {
+      if (!confirm('确认接受此任务？')) return;
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`http://localhost:3000/api/applications/${mission.application_id}/status`, {
+          method: 'PUT',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}` 
+          },
+          body: JSON.stringify({ status: 'confirmed' })
+        });
+        const result = await response.json();
+        if (result.success) {
+          alert('接单成功！请准时出发');
+          this.loadMissions(); // 刷新列表
+        }
+      } catch (error) {
+        alert('操作失败');
       }
     },
-    
-    filterMissions(status) {
-      this.filterStatus = (this.filterStatus === status) ? 'all' : status;
+
+    // 4. 开始执行 (变更为 进行中)
+    async startMission(mission) {
+      if (!confirm('确认开始执行任务（签到）？')) return;
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`http://localhost:3000/api/applications/${mission.application_id}/status`, {
+          method: 'PUT',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}` 
+          },
+          body: JSON.stringify({ status: 'in_progress' })
+        });
+        if (response.ok) {
+          alert('任务已开始，祝您一路平安');
+          this.loadMissions();
+        }
+      } catch (error) {
+        alert('启动失败');
+      }
     },
 
+    // 5. 完成任务 (带里程输入)
     async completeMission(mission) {
       const mileage = prompt('请输入本次实际行驶里程（公里）:');
+      if (mileage === null) return; // 取消输入
       if (!mileage || isNaN(mileage)) return alert('请输入有效的数字');
       
       try {
         const token = localStorage.getItem('token');
         const response = await fetch(`http://localhost:3000/api/applications/${mission.application_id}/status`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({ status: 'completed', actual_mileage: parseFloat(mileage) })
+          headers: { 
+            'Content-Type': 'application/json', 
+            'Authorization': `Bearer ${token}` 
+          },
+          body: JSON.stringify({ 
+            status: 'completed', 
+            actual_mileage: parseFloat(mileage) 
+          })
         });
         
         if (response.ok) {
-          alert('任务已完成，里程已记入数据库');
+          alert('任务已完成，奖励已计入统计');
           this.loadMissions();
-          this.loadDriverStats(); // 完成任务后立即刷新统计数据
+          this.loadDriverStats(); // 立即刷新总数
         }
       } catch (error) {
         alert('提交失败');
       }
     },
 
-    // 其他方法保持原样...
+    // 6. 拒绝/取消任务
+    async rejectMission(mission) {
+      if (!confirm('确定要放弃这项任务吗？')) return;
+      try {
+        const token = localStorage.getItem('token');
+        await fetch(`http://localhost:3000/api/applications/${mission.application_id}/status`, {
+          method: 'PUT',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'assigned', assigned_driver_id: null }) 
+        });
+        this.loadMissions();
+      } catch (error) {
+        console.error(error);
+      }
+    },
+
+    // 内部逻辑方法
+    updateStats(missions) {
+      this.stats.assignedCount = missions.filter(m => m.status === 'assigned').length;
+      this.stats.confirmedCount = missions.filter(m => m.status === 'confirmed').length;
+      this.stats.inProgressCount = missions.filter(m => m.status === 'in_progress').length;
+      this.stats.completedCount = missions.filter(m => m.status === 'completed').length;
+    },
+    filterMissionsByStatus(status = this.filterStatus) {
+      this.filteredMissions = status === 'all' 
+        ? [...this.missions] 
+        : this.missions.filter(m => m.status === status);
+    },
+    filterMissions(status) {
+      this.filterStatus = (this.filterStatus === status) ? 'all' : status;
+    },
     formatDateTime(s) { return s ? new Date(s).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '' },
     formatFullDateTime(s) { return s ? new Date(s).toLocaleString() : '' },
     getVehicleTypeText(t) { return {small:'小型车', business:'商务车', coach:'大客车'}[t] || t },
     getStatusText(s) { return {assigned:'待接受', confirmed:'已接受', in_progress:'进行中', completed:'已完成'}[s] || s },
     refreshMissions() { this.loadMissions(); this.loadDriverStats(); },
     goToHome() { this.$router.push('/home') },
-    logout() { localStorage.clear(); this.$router.push('/login') },
-    async acceptMission(m) { /* 保持原 acceptMission 逻辑 */ },
-    async rejectMission(m) { /* 保持原 rejectMission 逻辑 */ },
-    async startMission(m) { /* 保持原 startMission 逻辑 */ }
+    logout() { localStorage.clear(); this.$router.push('/login') }
   }
 };
 </script>

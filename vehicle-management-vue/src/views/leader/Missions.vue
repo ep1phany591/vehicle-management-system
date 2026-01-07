@@ -524,6 +524,12 @@ export default {
     };
   },
   computed: {
+    getAvatarUrl(path) {
+    if (!path) return 'https://via.placeholder.com/60'; // 如果没有头像，显示占位图
+    if (path.startsWith('http')) return path; // 如果已经是完整路径则直接返回
+    // 这里的端口 3000 和路径 /uploads/avatars/ 必须和你后端 app.js 保持一致
+    return `http://localhost:3000/uploads/avatars/${path}`;
+  },
     // 状态计数
     statusCounts() {
       const counts = {};

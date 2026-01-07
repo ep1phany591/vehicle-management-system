@@ -153,7 +153,7 @@
                 </div>
                 <div class="info-item">
                   <span class="info-label">座位数</span>
-                  <span class="info-value">{{ vehicle.seat_count || 5 }}座</span>
+                  <span class="info-value">{{ vehicle.capacity || 5 }}座</span>
                 </div>
               </div>
               
@@ -162,10 +162,7 @@
                   <span class="info-label">车龄</span>
                   <span class="info-value">{{ vehicle.purchase_date ? calculateAge(vehicle.purchase_date) : '未知' }}</span>
                 </div>
-                <div class="info-item">
-                  <span class="info-label">当前位置</span>
-                  <span class="info-value">{{ vehicle.current_location || '未获取' }}</span>
-                </div>
+                
               </div>
             </div>
             
@@ -203,14 +200,7 @@
               </button>
             </div>
             
-            <div class="vehicle-footer">
-              <div class="last-maintenance">
-                上次保养: {{ vehicle.last_maintenance || '无记录' }}
-              </div>
-              <div class="next-maintenance">
-                下次保养: {{ vehicle.next_maintenance || '待设置' }}
-              </div>
-            </div>
+           
           </div>
         </div>
         
@@ -404,7 +394,7 @@
               
               <div class="detail-item">
                 <span class="detail-label">座位数</span>
-                <span class="detail-value">{{ selectedVehicle.seat_count }}座</span>
+                <span class="detail-value">{{ selectedVehicle.capacity }}座</span>
               </div>
               
               <div class="detail-item">
@@ -427,23 +417,13 @@
                 <span class="detail-value">{{ selectedVehicle.driver_name || '未分配' }}</span>
               </div>
               
-              <div class="detail-item">
-                <span class="detail-label">当前位置</span>
-                <span class="detail-value">{{ selectedVehicle.current_location || '未获取' }}</span>
-              </div>
               
               <div class="detail-item full-width">
                 <span class="detail-label">车辆描述</span>
                 <span class="detail-value">{{ selectedVehicle.description || '无描述' }}</span>
               </div>
               
-              <div class="detail-item full-width">
-                <span class="detail-label">保养记录</span>
-                <span class="detail-value">
-                  上次保养: {{ selectedVehicle.last_maintenance || '无记录' }}<br>
-                  下次保养: {{ selectedVehicle.next_maintenance || '待设置' }}
-                </span>
-              </div>
+              
             </div>
             
             <div class="detail-actions">
@@ -790,7 +770,6 @@ export default {
     maintenance: '维修中',
     reserved: '已预约',
     unavailable: '停用',  // 数据库中的 unavailable 对应前端的"停用"
-    inactive: '停用'     // 如果将来有 inactive 也显示为"停用"
   };
   return statusMap[status] || status;
 },
@@ -926,8 +905,7 @@ export default {
 },
     
    async updateVehicleStatus(vehicle, status) {
- const dbStatus = status === 'unavailable' ? 'unavailable' : status;
-  const displayStatus = status === 'unavailable' ? '停用' : this.getStatusText(status);
+  const displayStatus =this.getStatusText(status);
   if (!confirm(`确定要将车辆 ${vehicle.license_plate} 的状态改为"${displayStatus}"吗？`)) {
     return;
   }
