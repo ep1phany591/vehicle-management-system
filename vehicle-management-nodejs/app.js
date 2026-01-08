@@ -9,7 +9,6 @@ const multer = require('multer');
 const fs = require('fs');
 const crypto = require('crypto');
 require('dotenv').config();
-
 // 新增依赖
 const svgCaptcha = require('svg-captcha');
 const session = require('express-session');
@@ -537,6 +536,7 @@ app.post('/api/upload/avatar',
 );
 
 // ==================== 用户管理路由 ====================
+
 // 获取当前用户信息
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
   try {
@@ -1217,7 +1217,77 @@ app.put('/api/users/:id', authenticateToken, upload.single('avatar_file'), async
   }
 });
 
-// 4. 删除用户
+// 4. 修改用户密码（管理员重置）
+app.put('/api/users/:id/password', authenticateToken, async (req, res) => {
+  try {
+    // 验证管理员权限
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false, 
+        message: '只有管理员可以重置密码' 
+      });
+    }
+    
+    const targetUserId = req.params.id;
+    const { newPassword } = req.body;
+    
+    if (!newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '新密码不能为空' 
+      });
+    }
+    
+    if (newPassword.length < 6) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '新密码长度不能少于6位' 
+      });
+    }
+    
+    // 检查用户是否存在
+    const [users] = await pool.query(
+      'SELECT user_id FROM users WHERE user_id = ?',
+      [targetUserId]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    
+    // 加密新密码
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // 更新密码
+    await pool.query(
+      'UPDATE users SET password = ?, updated_at = NOW() WHERE user_id = ?',
+      [hashedPassword, targetUserId]
+    );
+    
+    // 记录操作日志（可选）
+    // 如果表不存在，先检查一下
+    try {
+      await pool.query(
+        'INSERT INTO password_reset_logs (admin_id, user_id, reset_time) VALUES (?, ?, NOW())',
+        [req.user.user_id, targetUserId]
+      );
+    } catch (logError) {
+      console.log('密码重置日志记录失败（可能表不存在）:', logError);
+      // 不阻止主流程，继续执行
+    }
+    
+    res.json({ 
+      success: true, 
+      message: '密码重置成功' 
+    });
+    
+  } catch (error) {
+    console.error('重置密码失败:', error);
+    res.status(500).json({ success: false, message: '重置密码失败' });
+  }
+});
+
+// 5. 删除用户
 app.delete('/api/users/:id', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -1262,7 +1332,7 @@ app.delete('/api/users/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// 5. 添加用户
+// 6. 添加用户
 app.post('/api/users', authenticateToken, upload.single('avatar_file'), async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -1353,7 +1423,7 @@ app.post('/api/users', authenticateToken, upload.single('avatar_file'), async (r
   }
 });
 
-// 6. 用户统计信息更新接口（可选）
+// 7. 用户统计信息更新接口（可选）
 app.put('/api/users/:id/stats', authenticateToken, async (req, res) => {
   try {
     const { monthly_trips, total_mileage } = req.body;
@@ -1407,7 +1477,7 @@ app.put('/api/users/:id/stats', authenticateToken, async (req, res) => {
   }
 });
 
-// 7. 管理员更新用户信息（包括职位、角色等）
+// 8. 管理员更新用户信息（包括职位、角色等）
 app.put('/api/users/:id/admin', authenticateToken, requireRole('admin'), upload.single('avatar_file'), async (req, res) => {
   try {
     const targetUserId = req.params.id;
@@ -1470,6 +1540,178 @@ app.put('/api/users/:id/admin', authenticateToken, requireRole('admin'), upload.
     });
   } catch (error) {
     console.error('管理员更新用户信息失败:', error);
+    res.status(500).json({ success: false, message: '更新失败' });
+  }
+});
+
+// 9. 用户自己修改密码（需要旧密码验证）- 新增
+app.put('/api/users/me/password', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    const { oldPassword, newPassword } = req.body;
+    
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '旧密码和新密码不能为空' 
+      });
+    }
+    
+    if (newPassword.length < 6) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '新密码长度不能少于6位' 
+      });
+    }
+    
+    // 查询用户当前密码
+    const [users] = await pool.query(
+      'SELECT password FROM users WHERE user_id = ?',
+      [userId]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    
+    const storedPassword = users[0].password;
+    
+    // 验证旧密码
+    const isPasswordValid = await bcrypt.compare(oldPassword, storedPassword);
+    if (!isPasswordValid) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '旧密码错误' 
+      });
+    }
+    
+    // 检查新密码是否与旧密码相同
+    const isSamePassword = await bcrypt.compare(newPassword, storedPassword);
+    if (isSamePassword) {
+      return res.status(400).json({ 
+        success: false, 
+        message: '新密码不能与旧密码相同' 
+      });
+    }
+    
+    // 加密新密码
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    
+    // 更新密码
+    await pool.query(
+      'UPDATE users SET password = ?, updated_at = NOW() WHERE user_id = ?',
+      [hashedPassword, userId]
+    );
+    
+    res.json({ 
+      success: true, 
+      message: '密码修改成功' 
+    });
+    
+  } catch (error) {
+    console.error('修改密码失败:', error);
+    res.status(500).json({ success: false, message: '修改密码失败' });
+  }
+});
+
+// 10. 获取当前用户信息
+app.get('/api/users/me', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    
+    const [users] = await pool.query(
+      `SELECT user_id, real_name, phone, role, department, position, fleet_id, avatar, created_at 
+       FROM users WHERE user_id = ?`,
+      [userId]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    
+    res.json({ success: true, data: users[0] });
+  } catch (error) {
+    console.error('获取当前用户信息失败:', error);
+    res.status(500).json({ success: false, message: '获取用户信息失败' });
+  }
+});
+
+// 11. 更新当前用户信息
+app.put('/api/users/me', authenticateToken, upload.single('avatar_file'), async (req, res) => {
+  try {
+    const userId = req.user.user_id;
+    
+    const [existingUsers] = await pool.query(
+      'SELECT avatar FROM users WHERE user_id = ?',
+      [userId]
+    );
+    
+    if (existingUsers.length === 0) {
+      return res.status(404).json({ success: false, message: '用户不存在' });
+    }
+    
+    const { real_name, phone, department, position } = req.body;
+    
+    const updates = [];
+    const params = [];
+    const fields = { real_name, phone, department, position };
+    
+    Object.keys(fields).forEach(key => {
+      if (fields[key] !== undefined && fields[key] !== null) {
+        updates.push(`${key} = ?`);
+        params.push(fields[key]);
+      }
+    });
+    
+    // 处理头像上传
+    let avatarPath = null;
+    if (req.file) {
+      avatarPath = `/uploads/avatars/${req.file.filename}`;
+      updates.push('avatar = ?');
+      params.push(avatarPath);
+      
+      // 删除旧头像文件（如果存在）
+      if (existingUsers[0].avatar) {
+        const oldAvatarPath = path.join(uploadsDir, existingUsers[0].avatar.replace('/uploads/', ''));
+        if (fs.existsSync(oldAvatarPath)) {
+          fs.unlinkSync(oldAvatarPath);
+        }
+      }
+    }
+    
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, message: '无内容更新' });
+    }
+    
+    params.push(userId);
+    
+    await pool.query(
+      `UPDATE users SET ${updates.join(', ')}, updated_at = NOW() WHERE user_id = ?`,
+      params
+    );
+    
+    res.json({ 
+      success: true, 
+      message: '个人信息更新成功',
+      avatar: req.file ? `/uploads/avatars/${req.file.filename}` : existingUsers[0].avatar
+    });
+  } catch (error) {
+    console.error('更新个人信息失败:', error);
+    
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        message: '头像文件大小不能超过5MB'
+      });
+    }
+    
+    if (error.message === '只支持 JPG、JPEG、PNG 格式的图片') {
+      return res.status(400).json({
+        success: false,
+        message: error.message
+      });
+    }
+    
     res.status(500).json({ success: false, message: '更新失败' });
   }
 });

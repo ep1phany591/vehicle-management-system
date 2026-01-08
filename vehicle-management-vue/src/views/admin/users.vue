@@ -76,6 +76,7 @@
             </td>
             <td class="ops-cell">
               <van-button size="small" plain type="primary" @click="openEditModal(user)">编辑</van-button>
+              <van-button size="small" plain type="warning" @click="openPasswordModal(user, true)">重置密码</van-button>
               <van-button size="small" plain type="danger" @click="deleteUser(user.user_id)">移除</van-button>
             </td>
           </tr>
@@ -88,20 +89,7 @@
       </div>
     </div>
 
-    <!-- 头像预览模态框 -->
-    <van-image-preview
-      v-model:show="showAvatarPreview"
-      :images="avatarPreviewImages"
-      :closeable="true"
-      :show-index="false"
-      teleport="body"
-      class="avatar-preview-modal"
-    >
-      <template #image="{ src }">
-        <img :src="src" class="preview-avatar-img" />
-      </template>
-    </van-image-preview>
-
+    <!-- 用户信息编辑/添加模态框 -->
     <van-popup 
       v-model:show="showModal" 
       round 
@@ -198,6 +186,107 @@
         </div>
       </div>
     </van-popup>
+
+    <!-- 修改密码模态框 -->
+    <van-popup 
+      v-model:show="showPasswordModal" 
+      round 
+      :style="{ width: '450px', padding: '0' }"
+      :close-on-click-overlay="false"
+      class="center-glass-modal"
+      teleport="body"
+    >
+      <div class="modal-wrapper">
+        <div class="modal-header">
+          <h3>
+            <van-icon name="lock" />
+            重置密码
+          </h3>
+          <van-icon name="cross" class="close-icon" @click="showPasswordModal = false" />
+        </div>
+
+        <div class="modal-body">
+          <van-form @submit="handlePasswordSubmit">
+            <div class="form-group-title">密码信息</div>
+            <van-cell-group inset class="no-border">
+              <!-- 管理员重置他人密码，不需要旧密码 -->
+              <van-field 
+                v-if="!isAdminModifying"
+                v-model="passwordForm.oldPassword"
+                :type="showOldPassword ? 'text' : 'password'"
+                label="旧密码"
+                placeholder="请输入当前密码"
+                :right-icon="showOldPassword ? 'eye-o' : 'closed-eye'"
+                @click-right-icon="showOldPassword = !showOldPassword"
+                required
+              />
+              
+              <van-field 
+                v-model="passwordForm.newPassword"
+                :type="showNewPassword ? 'text' : 'password'"
+                label="新密码"
+                placeholder="请输入新密码（6-20位）"
+                :right-icon="showNewPassword ? 'eye-o' : 'closed-eye'"
+                @click-right-icon="showNewPassword = !showNewPassword"
+                required
+                :rules="[
+                  { required: true, message: '请输入新密码' },
+                  { validator: validatePassword, message: '密码需6-20位，包含字母和数字' }
+                ]"
+              />
+              
+              <van-field 
+                v-model="passwordForm.confirmPassword"
+                :type="showConfirmPassword ? 'text' : 'password'"
+                label="确认密码"
+                placeholder="请再次输入新密码"
+                :right-icon="showConfirmPassword ? 'eye-o' : 'closed-eye'"
+                @click-right-icon="showConfirmPassword = !showConfirmPassword"
+                required
+                :rules="[
+                  { validator: validateConfirmPassword, message: '两次输入的密码不一致' }
+                ]"
+              />
+            </van-cell-group>
+
+            <!-- 密码强度提示 -->
+            <div class="password-tips" v-if="passwordForm.newPassword">
+              <p>🔐 密码强度：{{ getPasswordStrengthText() }}</p>
+              <div class="strength-bar">
+                <div 
+                  class="strength-level" 
+                  :class="'level-' + passwordStrength"
+                  :style="{ width: (passwordStrength / 5) * 100 + '%' }"
+                ></div>
+              </div>
+            </div>
+
+            <div class="password-tips">
+              <p>🔐 密码安全要求：</p>
+              <ul>
+                <li>长度6-20位字符</li>
+                <li>必须包含字母和数字</li>
+                <li>建议使用大小写字母组合</li>
+                <li>不要使用简单密码如"123456"</li>
+              </ul>
+            </div>
+
+            <div class="modal-footer">
+              <van-button 
+                round 
+                block 
+                type="primary" 
+                native-type="submit" 
+                :loading="isChangingPassword"
+                class="submit-btn"
+              >
+                确认修改
+              </van-button>
+            </div>
+          </van-form>
+        </div>
+      </div>
+    </van-popup>
   </div>
 </template>
 
@@ -205,7 +294,7 @@
 import api from '@/api';
 import { 
   Popup, Form, Field, CellGroup, Button, Icon, Search, Tag, 
-  ImagePreview, showToast, showConfirmDialog 
+  showImagePreview, showToast, showConfirmDialog 
 } from 'vant';
 
 export default {
@@ -219,19 +308,26 @@ export default {
     'van-icon': Icon,
     'van-search': Search,
     'van-tag': Tag,
-    'van-image-preview': ImagePreview.Component // 修复报错的关键点
+    // 删除 van-image-preview 组件的注册
   },
   data() {
     return {
-      users: [], // 始终保持为数组
+      users: [],
       searchQuery: '',
       showModal: false,
+      showPasswordModal: false,
       isEdit: false,
       isSubmitting: false,
-      showAvatarPreview: false,
-      avatarPreviewImages: [],
+      isChangingPassword: false,
       avatarFile: null,
       avatarPreviewUrl: null,
+      showOldPassword: false,
+      showNewPassword: false,
+      showConfirmPassword: false,
+      isAdminModifying: true,
+      passwordStrength: 0,
+      currentUserId: '',
+      editingUserInfo: {},
       editingForm: {
         user_id: '', 
         real_name: '', 
@@ -241,12 +337,16 @@ export default {
         role: 'employee', 
         fleet_id: '',
         avatar: ''
+      },
+      passwordForm: {
+        oldPassword: '',
+        newPassword: '',
+        confirmPassword: ''
       }
     };
   },
   computed: {
     filteredUsers() {
-      // --- 关键修复：增加 this.users 的安全检查 ---
       if (!Array.isArray(this.users)) return [];
       
       const q = this.searchQuery ? this.searchQuery.toLowerCase().trim() : '';
@@ -254,44 +354,52 @@ export default {
 
       return this.users.filter(u => {
         if (!u) return false;
-        // 使用安全拼接，防止 real_name 等字段为 null 时导致 includes 报错
         const name = u.real_name || '';
         const phone = u.phone || '';
         const id = u.user_id || '';
         const pos = u.position || '';
+        const dept = u.department || '';
         
-        return (name + phone + id + pos).toLowerCase().includes(q);
+        return (name + phone + id + pos + dept).toLowerCase().includes(q);
       });
+    }
+  },
+  watch: {
+    'passwordForm.newPassword'(newVal) {
+      if (newVal) {
+        this.passwordStrength = this.calculatePasswordStrength(newVal);
+      } else {
+        this.passwordStrength = 0;
+      }
     }
   },
   created() { 
     this.fetchUsers(); 
   },
   methods: {
-   async fetchUsers() {
-  try {
-    const res = await api.user.getAll();
-    console.log('📡 原始响应:', res); 
-    
-    if (res && res.success) {
-      this.users = Array.isArray(res.users) ? res.users : (Array.isArray(res.data) ? res.data : []);
-    } else {
-      this.users = Array.isArray(res) ? res : [];
-    }
-    
-    console.log('✅ 最终渲染条数:', this.users.length);
-  } catch (error) {
-    console.error('获取用户数据失败:', error);
-    this.users = []; 
-    showToast('获取数据失败');
-  }
-},
+    async fetchUsers() {
+      try {
+        const res = await api.user.getAll();
+        console.log('📡 原始响应:', res); 
+        
+        if (res && res.success) {
+          this.users = Array.isArray(res.users) ? res.users : (Array.isArray(res.data) ? res.data : []);
+        } else {
+          this.users = Array.isArray(res) ? res : [];
+        }
+        
+        console.log('✅ 最终渲染条数:', this.users.length);
+      } catch (error) {
+        console.error('获取用户数据失败:', error);
+        this.users = []; 
+        showToast('获取数据失败');
+      }
+    },
     
     getAvatarUrl(avatarPath) {
-      if (!avatarPath || avatarPath === 'null') return '';
+      if (!avatarPath || avatarPath === 'null' || avatarPath === 'undefined') return '';
       if (avatarPath.startsWith('http')) return avatarPath;
       const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
-      // 确保路径拼接逻辑正确（是否有斜杠）
       const path = avatarPath.startsWith('/') ? avatarPath : `/${avatarPath}`;
       return baseUrl + path;
     },
@@ -300,7 +408,6 @@ export default {
       const img = event.target;
       img.style.display = 'none';
       const parent = img.parentElement;
-      // 避免重复添加占位符
       if (parent.querySelector('.avatar-placeholder')) return;
       
       const placeholder = document.createElement('div');
@@ -319,14 +426,20 @@ export default {
       return map[role] || role;
     },
     
-    previewAvatar(avatarUrl) {
+    previewAvatar(avatarUrl, userName) {
       if (!avatarUrl) {
-        showToast('该用户没有设置头像');
+        showToast(`${userName || '该用户'}没有设置头像`);
         return;
       }
       const fullUrl = this.getAvatarUrl(avatarUrl);
-      this.avatarPreviewImages = [fullUrl];
-      this.showAvatarPreview = true;
+      // 使用函数式调用图片预览
+      showImagePreview({
+        images: [fullUrl],
+        closeable: true,
+        showIndex: false,
+        teleport: 'body',
+        className: 'avatar-preview-modal',
+      });
     },
     
     openAddModal() {
@@ -347,6 +460,22 @@ export default {
       this.avatarFile = null;
       this.avatarPreviewUrl = user.avatar ? this.getAvatarUrl(user.avatar) : null;
       this.showModal = true;
+    },
+    
+    openPasswordModal(user, isAdmin = true) {
+      this.currentUserId = user.user_id;
+      this.editingUserInfo = { ...user };
+      this.isAdminModifying = isAdmin;
+      this.passwordForm = {
+        oldPassword: '',
+        newPassword: '',
+        confirmPassword: ''
+      };
+      this.showOldPassword = false;
+      this.showNewPassword = false;
+      this.showConfirmPassword = false;
+      this.passwordStrength = 0;
+      this.showPasswordModal = true;
     },
     
     triggerAvatarUpload() {
@@ -371,6 +500,14 @@ export default {
       const reader = new FileReader();
       reader.onload = (e) => { this.avatarPreviewUrl = e.target.result; };
       reader.readAsDataURL(file);
+    },
+    
+    removeAvatarFile() {
+      this.avatarFile = null;
+      this.avatarPreviewUrl = null;
+      if (this.$refs.avatarInput) {
+        this.$refs.avatarInput.value = '';
+      }
     },
     
     async handleSubmit() {
@@ -405,10 +542,112 @@ export default {
           showToast(res?.message || '操作失败');
         }
       } catch (err) {
+        console.error('提交失败:', err);
         showToast(err.response?.data?.message || '连接服务器失败');
       } finally {
         this.isSubmitting = false;
       }
+    },
+    
+    async handlePasswordSubmit() {
+      if (!this.isAdminModifying && !this.passwordForm.oldPassword) {
+        showToast('请输入旧密码');
+        return;
+      }
+      
+      if (!this.passwordForm.newPassword) {
+        showToast('请输入新密码');
+        return;
+      }
+      
+      if (this.passwordForm.newPassword !== this.passwordForm.confirmPassword) {
+        showToast('两次输入的新密码不一致');
+        return;
+      }
+      
+      if (!this.validatePassword(this.passwordForm.newPassword)) {
+        showToast('新密码不符合安全要求');
+        return;
+      }
+      
+      this.isChangingPassword = true;
+      
+      try {
+        if (this.isAdminModifying) {
+          // 管理员重置密码 - 调用 resetPassword
+          const res = await api.user.resetPassword(this.currentUserId, {
+            newPassword: this.passwordForm.newPassword
+          });
+          
+          if (res && res.success) {
+            showToast({ 
+              message: '密码重置成功', 
+              type: 'success',
+              duration: 2000 
+            });
+            this.showPasswordModal = false;
+          } else {
+            showToast(res?.message || '密码重置失败');
+          }
+        } else {
+          // 用户自己修改密码 - 调用 changePassword
+          const res = await api.user.changePassword({
+            oldPassword: this.passwordForm.oldPassword,
+            newPassword: this.passwordForm.newPassword
+          });
+          
+          if (res && res.success) {
+            showToast({ 
+              message: '密码修改成功', 
+              type: 'success',
+              duration: 2000 
+            });
+            this.showPasswordModal = false;
+            
+            showToast({ 
+              message: '请使用新密码重新登录', 
+              duration: 3000 
+            });
+          } else {
+            showToast(res?.message || '密码修改失败');
+          }
+        }
+      } catch (error) {
+        console.error('修改密码失败:', error);
+        showToast(error.response?.data?.message || '修改密码失败，请稍后重试');
+      } finally {
+        this.isChangingPassword = false;
+      }
+    },
+    
+    validatePassword(val) {
+      if (!val) return false;
+      if (val.length < 6 || val.length > 20) return false;
+      if (!/[A-Za-z]/.test(val)) return false;
+      if (!/\d/.test(val)) return false;
+      return true;
+    },
+    
+    validateConfirmPassword(val) {
+      return val === this.passwordForm.newPassword;
+    },
+    
+    calculatePasswordStrength(password) {
+      if (!password) return 0;
+      
+      let strength = 0;
+      if (password.length >= 6) strength++;
+      if (password.length >= 8) strength++;
+      if (/[a-z]/.test(password)) strength++;
+      if (/[A-Z]/.test(password)) strength++;
+      if (/[^A-Za-z0-9]/.test(password)) strength++;
+      
+      return Math.min(strength, 5);
+    },
+    
+    getPasswordStrengthText() {
+      const texts = ['非常弱', '弱', '中等', '较强', '强'];
+      return texts[this.passwordStrength - 1] || '无';
     },
     
     async deleteUser(id) {
@@ -431,82 +670,134 @@ export default {
   }
 };
 </script>
+
 <style scoped>
-/* 核心容器 */
-.admin-container { 
-  padding: 30px; 
-  background: #f0f4f8; 
+.admin-container {
+  padding: 20px;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e4edf5 100%);
   min-height: 100vh;
-  font-size: 16px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* 顶部页眉 */
 .page-header {
-  background: linear-gradient(135deg, #1890ff 0%, #0052d9 100%);
-  padding: 40px;
-  border-radius: 20px;
+  background: linear-gradient(90deg, #1976d2 0%, #2196f3 100%);
+  border-radius: 12px;
+  padding: 25px 30px;
+  margin-bottom: 20px;
+  box-shadow: 0 4px 12px rgba(33, 150, 243, 0.2);
   color: white;
-  margin-bottom: 30px;
-  box-shadow: 0 10px 25px rgba(24, 144, 255, 0.25);
 }
-.header-content { display: flex; justify-content: space-between; align-items: center; }
-.header-left { display: flex; align-items: center; gap: 20px; }
-.icon-box { background: rgba(255,255,255,0.25); padding: 15px; border-radius: 15px; font-size: 32px; }
-.header-left h2 { margin: 0; font-size: 28px; letter-spacing: 1px; }
-.header-left p { margin: 10px 0 0; opacity: 0.9; font-size: 16px; }
-.add-btn { height: 50px; font-size: 18px; padding: 0 30px; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.15); font-weight: bold; }
 
-/* 交互条 */
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.icon-box {
+  width: 50px;
+  height: 50px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-box .van-icon {
+  font-size: 28px;
+  color: white;
+}
+
+.header-left h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.header-left p {
+  margin: 5px 0 0;
+  opacity: 0.9;
+  font-size: 14px;
+}
+
+.add-btn {
+  background: #4caf50;
+  border: none;
+  border-radius: 8px;
+  font-weight: 500;
+}
+
 .action-bar-card {
   background: white;
-  padding: 15px 25px;
-  border-radius: 16px;
-  margin-bottom: 25px;
+  border-radius: 10px;
+  padding: 15px 20px;
+  margin-bottom: 20px;
   display: flex;
-  gap: 20px;
   align-items: center;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.04);
+  justify-content: space-between;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
-.custom-search { flex: 1; padding: 0; }
-:deep(.van-search__content) { background: #f5f7fa; }
-:deep(.van-field__control) { font-size: 17px; }
 
-/* 表格美化 */
+.custom-search {
+  flex: 1;
+  max-width: 600px;
+}
+
+.refresh-btn {
+  margin-left: 15px;
+}
+
 .table-container {
   background: white;
-  border-radius: 20px;
-  padding: 15px;
-  box-shadow: 0 8px 30px rgba(0,0,0,0.06);
-}
-.modern-table { width: 100%; border-collapse: collapse; }
-.modern-table th { 
-  padding: 20px; 
-  text-align: left; 
-  color: #444; 
-  font-size: 16px;
-  font-weight: 700;
-  border-bottom: 2px solid #f0f2f5; 
-}
-.table-row:hover { background-color: #f8fbff; }
-.table-row td { 
-  padding: 15px 20px; 
-  border-bottom: 1px solid #f2f4f7; 
-  vertical-align: middle; 
-  font-size: 16px; 
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
-/* 头像列样式 */
+.modern-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.modern-table thead {
+  background: linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%);
+}
+
+.modern-table th {
+  padding: 16px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: #333;
+  border-bottom: 2px solid #dee2e6;
+}
+
+.modern-table tbody tr {
+  border-bottom: 1px solid #f0f0f0;
+  transition: all 0.2s ease;
+}
+
+.modern-table tbody tr:hover {
+  background-color: #f8f9fa;
+}
+
+.modern-table td {
+  padding: 14px 12px;
+  vertical-align: middle;
+}
+
 .avatar-cell {
-  width: 70px;
-  padding: 10px 5px !important;
+  padding: 8px 12px !important;
 }
 
 .avatar-wrapper {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
   cursor: pointer;
+  text-align: center;
 }
 
 .avatar-img-box {
@@ -514,17 +805,9 @@ export default {
   height: 50px;
   border-radius: 50%;
   overflow: hidden;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  transition: all 0.3s ease;
-}
-
-.avatar-wrapper:hover .avatar-img-box {
-  transform: scale(1.05);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+  margin: 0 auto;
+  border: 2px solid #e0e0e0;
+  background: #f5f5f5;
 }
 
 .user-avatar {
@@ -534,107 +817,196 @@ export default {
 }
 
 .avatar-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
   color: white;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: bold;
 }
 
 .avatar-hint {
-  margin-top: 5px;
   font-size: 11px;
   color: #666;
+  margin-top: 4px;
   opacity: 0.7;
-  transition: opacity 0.3s;
 }
 
-.avatar-wrapper:hover .avatar-hint {
-  opacity: 1;
+.id-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  background: #e3f2fd;
+  color: #1976d2;
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-weight: 500;
 }
 
-/* 其他单元格样式 */
-.id-badge { 
-  background: #f0f2f5; 
-  color: #475569; 
-  padding: 6px 12px; 
-  border-radius: 8px; 
-  font-family: 'Courier New', monospace; 
-  font-size: 14px; 
-  font-weight: bold; 
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.user-name { 
-  display: block; 
-  font-weight: 700; 
-  color: #1a1a1a; 
-  font-size: 16px; 
-  margin-bottom: 6px; 
+.user-name {
+  font-weight: 500;
+  color: #333;
 }
 
-.user-pos-tag { 
-  font-size: 13px; 
-  color: #1890ff; 
-  background: #e6f7ff; 
-  padding: 3px 10px; 
-  border-radius: 6px; 
-  font-weight: 500; 
+.user-pos-tag {
+  background: #e8f5e9;
+  color: #2e7d32;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
 }
 
-.phone-text { color: #334155; font-size: 15px; font-weight: 500; }
-
-.dept-box { display: flex; align-items: center; gap: 10px; }
-.role-dot { width: 10px; height: 10px; border-radius: 50%; }
-.role-text { font-size: 15px; color: #334155; font-weight: 500; }
-
-/* 模态框样式 */
-.center-glass-modal { overflow: visible !important; }
-.modal-header { 
-  padding: 25px 30px; 
-  background: #fff; 
-  border-bottom: 1px solid #f0f2f5; 
-  display: flex; 
-  justify-content: space-between; 
-  align-items: center; 
+.phone-text {
+  color: #555;
+  font-weight: 500;
 }
-.modal-header h3 { 
-  margin: 0; 
-  font-size: 22px; 
-  color: #1a1a1a; 
-  display: flex; 
-  align-items: center; 
-  gap: 12px; 
-}
-.close-icon { 
-  font-size: 24px; 
-  color: #94a3b8; 
-  cursor: pointer; 
-  transition: color 0.2s; 
-}
-.close-icon:hover { color: #ef4444; }
 
-.modal-body { padding: 20px 10px 35px; }
+.dept-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
-/* 头像上传区域 */
-.avatar-upload-section {
-  padding: 0 30px 20px;
+.role-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.role-dot.admin {
+  background: #f44336;
+}
+
+.role-dot.manager {
+  background: #ff9800;
+}
+
+.role-dot.driver {
+  background: #2196f3;
+}
+
+.role-dot.employee {
+  background: #4caf50;
+}
+
+.role-text {
+  color: #666;
+  font-size: 13px;
+}
+
+.ops-cell {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.ops-cell .van-button {
+  min-width: 80px;
+  margin: 2px 0;
+  border-radius: 6px;
+}
+
+.empty-holder {
+  text-align: center;
+  padding: 60px 20px;
+  color: #999;
+}
+
+.empty-holder p {
+  margin-top: 15px;
+  font-size: 16px;
+}
+
+.text-center {
   text-align: center;
 }
 
+.center-glass-modal {
+  overflow: hidden;
+}
+
+.modal-wrapper {
+  background: white;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 25px;
+  background: linear-gradient(90deg, #1976d2 0%, #2196f3 100%);
+  color: white;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.close-icon {
+  font-size: 18px;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+
+.close-icon:hover {
+  opacity: 1;
+}
+
+.modal-body {
+  padding: 25px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.form-group-title {
+  font-size: 16px;
+  font-weight: 500;
+  color: #333;
+  margin: 20px 0 15px 5px;
+  padding-left: 10px;
+  border-left: 4px solid #1976d2;
+}
+
+.no-border {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.avatar-upload-section {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
 .current-avatar-box {
-  position: relative;
   width: 120px;
   height: 120px;
   margin: 0 auto 15px;
   border-radius: 50%;
-  background: #f8fafc;
-  border: 2px dashed #e2e8f0;
   overflow: hidden;
+  position: relative;
   cursor: pointer;
-  transition: all 0.3s;
+  border: 2px dashed #ccc;
+  background: #f8f9fa;
 }
 
 .current-avatar-box:hover {
-  border-color: #1890ff;
-  background: #f0f7ff;
+  border-color: #1976d2;
 }
 
 .avatar-preview-img {
@@ -649,12 +1021,13 @@ export default {
 }
 
 .avatar-upload-placeholder {
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
-  color: #94a3b8;
+  color: #999;
 }
 
 .avatar-upload-placeholder p {
@@ -663,8 +1036,7 @@ export default {
 }
 
 .avatar-upload-placeholder small {
-  font-size: 12px;
-  color: #cbd5e1;
+  font-size: 11px;
 }
 
 .avatar-upload-mask {
@@ -679,90 +1051,130 @@ export default {
   justify-content: center;
   opacity: 0;
   transition: opacity 0.3s;
-  color: white;
 }
 
 .current-avatar-box:hover .avatar-upload-mask {
   opacity: 1;
 }
 
+.avatar-upload-mask .van-icon {
+  color: white;
+}
+
 .avatar-upload-actions {
   display: flex;
+  justify-content: center;
   gap: 10px;
+}
+
+.glass-select {
+  width: 100%;
+  padding: 10px 15px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: white;
+  font-size: 14px;
+  color: #333;
+  outline: none;
+  transition: border-color 0.3s;
+}
+
+.glass-select:focus {
+  border-color: #1976d2;
+}
+
+.modal-footer {
+  margin-top: 30px;
+  padding: 0 10px;
+}
+
+.submit-btn {
+  background: linear-gradient(90deg, #1976d2 0%, #2196f3 100%);
+  border: none;
+  height: 45px;
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.password-tips {
+  margin: 15px 0;
+  padding: 12px 15px;
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  border-left: 4px solid #1989fa;
+  font-size: 13px;
+  color: #666;
+}
+
+.password-tips p {
+  margin: 0 0 8px 0;
+  font-weight: 500;
+  color: #333;
+}
+
+.password-tips ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.6;
+}
+
+.password-tips li {
+  margin-bottom: 4px;
+}
+
+.strength-bar {
+  height: 6px;
+  background: #e0e0e0;
+  border-radius: 3px;
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.strength-level {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.strength-level.level-1 {
+  background: #ff5252;
+}
+
+.strength-level.level-2 {
+  background: #ff9800;
+}
+
+.strength-level.level-3 {
+  background: #ffc107;
+}
+
+.strength-level.level-4 {
+  background: #8bc34a;
+}
+
+.strength-level.level-5 {
+  background: #4caf50;
+}
+</style>
+
+<style>
+/* 全局样式，用于图片预览 */
+.avatar-preview-modal .van-image-preview__cover {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: auto;
+}
+
+.avatar-preview-modal .van-image-preview__image {
+  display: flex;
+  align-items: center;
   justify-content: center;
 }
 
-.form-group-title { 
-  font-size: 14px; 
-  color: #1890ff; 
-  font-weight: 800; 
-  padding: 10px 35px; 
-  text-transform: uppercase; 
-  letter-spacing: 1px; 
-  background: #f0f7ff; 
-  margin-bottom: 15px; 
-}
-
-/* 表单字段样式 */
-:deep(.van-field__label) { 
-  font-size: 16px; 
-  font-weight: 600; 
-  color: #475569; 
-  width: 6em; 
-}
-:deep(.van-field__value) { font-size: 16px; }
-
-.glass-select { 
-  width: 100%; 
-  border: 1px solid #e2e8f0; 
-  border-radius: 10px; 
-  padding: 12px; 
-  background: #f8fafc; 
-  outline: none; 
-  font-size: 16px;
-  color: #1e293b;
-}
-
-.modal-footer { padding: 30px 40px 0; }
-.submit-btn { 
-  height: 55px; 
-  font-size: 19px; 
-  font-weight: 800; 
-  letter-spacing: 2px; 
-}
-
-.empty-holder { 
-  padding: 80px 0; 
-  text-align: center; 
-  color: #94a3b8; 
-}
-.empty-holder p { 
-  font-size: 18px; 
-  margin-top: 15px; 
-}
-
-/* 头像预览模态框样式 */
-.preview-avatar-img {
-  width: 100%;
-  height: 100%;
+.avatar-preview-modal .van-image-preview__image img {
+  max-width: 80vw;
+  max-height: 80vh;
   object-fit: contain;
-}
-
-/* 角色点颜色 */
-.role-dot.admin { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.4); }
-.role-dot.manager { background: #f59e0b; box-shadow: 0 0 8px rgba(245, 158, 11, 0.4); }
-.role-dot.driver { background: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.4); }
-.role-dot.employee { background: #3b82f6; box-shadow: 0 0 8px rgba(59, 130, 246, 0.4); }
-
-/* 操作按钮样式 */
-.ops-cell {
-  text-align: center;
-  white-space: nowrap;
-}
-
-.ops-cell .van-button {
-  margin: 0 4px;
-  font-size: 13px;
-  padding: 4px 12px;
 }
 </style>

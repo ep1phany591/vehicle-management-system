@@ -1,3 +1,4 @@
+// api.js
 import axios from 'axios';
 import { showFailToast } from 'vant';
 
@@ -69,7 +70,13 @@ const api = {
     // 个人中心相关
     getProfile: () => instance.get('/users/me'),
     updateProfile: (data) => instance.put('/users/me', data),
+    
+    // 用户自己修改密码（需要旧密码）
     changePassword: (data) => instance.put('/users/me/password', data),
+    
+    // 管理员重置用户密码（不需要旧密码）
+    resetPassword: (userId, data) => instance.put(`/users/${userId}/password`, data),
+    
     updateStats: (id, data) => instance.put(`/users/${id}/stats`, data),
     getUserStats: (id) => instance.get(`/users/${id}/statistics`),
 
