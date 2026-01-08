@@ -27,6 +27,14 @@
           <span>🔄</span>
           <span>刷新</span>
         </button>
+        <button 
+          v-if="selectedVehicles.length > 0" 
+          @click="showBatchDeleteConfirm" 
+          class="delete-btn batch"
+        >
+          <span>🗑️</span>
+          <span>批量删除 ({{ selectedVehicles.length }})</span>
+        </button>
       </div>
       <div class="action-right">
         <div class="search-box">
@@ -46,6 +54,7 @@
             <option value="in_use">使用中</option>
             <option value="maintenance">维修中</option>
             <option value="reserved">已预约</option>
+            <option value="unavailable">不可用</option>
           </select>
         </div>
         <div class="filter-group">
@@ -55,39 +64,23 @@
             <option value="small">小型车</option>
             <option value="business">商务车</option>
             <option value="coach">大客车</option>
+            <option value="truck">货车</option>
+            <option value="van">面包车</option>
           </select>
         </div>
       </div>
     </div>
 
-    <!-- 统计卡片 -->
-    <div class="stats-cards">
-      <div class="stat-card" @click="filterStatus = 'available'">
-        <div class="stat-icon available">✅</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ stats.availableCount }}</div>
-          <div class="stat-label">可用车辆</div>
-        </div>
-      </div>
-      <div class="stat-card" @click="filterStatus = 'in_use'">
-        <div class="stat-icon in_use">🚗</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ stats.inUseCount }}</div>
-          <div class="stat-label">使用中</div>
-        </div>
-      </div>
-      <div class="stat-card" @click="filterStatus = 'maintenance'">
-        <div class="stat-icon maintenance">🔧</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ stats.maintenanceCount }}</div>
-          <div class="stat-label">维修中</div>
-        </div>
-      </div>
-      <div class="stat-card" @click="showMaintenanceSchedule">
-        <div class="stat-icon schedule">📅</div>
-        <div class="stat-content">
-          <div class="stat-value">{{ stats.upcomingMaintenance }}</div>
-          <div class="stat-label">待保养</div>
+    <!-- 批量操作提示 -->
+    <div v-if="selectedVehicles.length > 0" class="batch-action-bar">
+      <div class="batch-info">
+        <span class="selected-count">已选择 {{ selectedVehicles.length }} 辆车辆</span>
+        <div class="batch-actions">
+          <button @click="clearSelection" class="cancel-selection-btn">取消选择</button>
+          <button @click="showBatchDeleteConfirm" class="batch-delete-btn">
+            <span>🗑️</span>
+            批量删除
+          </button>
         </div>
       </div>
     </div>
@@ -111,16 +104,30 @@
           v-for="vehicle in filteredVehicles" 
           :key="vehicle.vehicle_id"
           class="vehicle-card"
-          :class="vehicle.status"
-          @click="viewVehicleDetail(vehicle)"
+          :class="[vehicle.status, { selected: isSelected(vehicle.vehicle_id) }]"
+          @click="toggleSelect(vehicle, $event)"
         >
           <div class="vehicle-header">
+            <div class="selection-checkbox" @click.stop="toggleSelect(vehicle, $event)">
+              <div class="checkbox" :class="{ checked: isSelected(vehicle.vehicle_id) }">
+                <span v-if="isSelected(vehicle.vehicle_id)">✓</span>
+              </div>
+            </div>
+            
             <div class="vehicle-badge" :class="vehicle.status">
               {{ getStatusText(vehicle.status) }}
             </div>
+            
             <div class="vehicle-actions">
               <button @click.stop="editVehicle(vehicle)" class="action-btn edit">编辑</button>
               <button @click.stop="changeStatus(vehicle)" class="action-btn status">状态</button>
+              <button 
+                @click.stop="showDeleteConfirm(vehicle)" 
+                class="action-btn delete"
+                :disabled="!canDeleteVehicle(vehicle)"
+              >
+                删除
+              </button>
             </div>
           </div>
           
@@ -152,17 +159,26 @@
               <span class="info-value">{{ vehicle.current_mileage || '0' }}km</span>
             </div>
             <div class="info-item">
-              <span class="info-label">车队：</span>
-              <span class="info-value">{{ vehicle.fleet_name || '未分配' }}</span>
+              <span class="info-label">燃油类型：</span>
+              <span class="info-value">{{ getFuelTypeText(vehicle.fuel_type) }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">购买日期：</span>
+              <span class="info-value">{{ formatDate(vehicle.purchase_date) }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">购买价格：</span>
+              <span class="info-value">{{ vehicle.purchase_price ? `¥${vehicle.purchase_price}` : '--' }}</span>
+            </div>
+            <div class="info-item">
+              <span class="info-label">当前司机：</span>
+              <span class="info-value">{{ vehicle.current_driver_name || '未分配' }}</span>
             </div>
           </div>
 
           <div class="vehicle-footer">
-            <div class="last-maintenance">
-              上次保养：{{ vehicle.last_maintenance || '--' }}
-            </div>
-            <div class="next-maintenance">
-              下次保养：{{ vehicle.next_maintenance || '--' }}
+            <div class="description" v-if="vehicle.description">
+              备注：{{ vehicle.description }}
             </div>
           </div>
         </div>
@@ -192,6 +208,8 @@
               <option value="small">小型车</option>
               <option value="business">商务车</option>
               <option value="coach">大客车</option>
+              <option value="truck">货车</option>
+              <option value="van">面包车</option>
             </select>
           </div>
           <div class="form-group">
@@ -251,26 +269,51 @@
           </div>
         </div>
         
-        <div class="form-group">
-          <label>当前里程</label>
-          <input 
-            type="number" 
-            v-model="vehicleForm.current_mileage"
-            placeholder="当前里程"
-            class="form-input"
-            step="0.01"
-          >
+        <div class="form-row">
+          <div class="form-group">
+            <label>购买日期</label>
+            <input 
+              type="date" 
+              v-model="vehicleForm.purchase_date"
+              class="form-input"
+            >
+          </div>
+          <div class="form-group">
+            <label>购买价格（元）</label>
+            <input 
+              type="number" 
+              v-model="vehicleForm.purchase_price"
+              placeholder="购买价格"
+              class="form-input"
+              step="0.01"
+              min="0"
+            >
+          </div>
         </div>
         
-        <div class="form-group">
-          <label>燃油类型</label>
-          <select v-model="vehicleForm.fuel_type" class="form-select">
-            <option value="">请选择燃油类型</option>
-            <option value="gasoline">汽油</option>
-            <option value="diesel">柴油</option>
-            <option value="electric">电动</option>
-            <option value="hybrid">混合动力</option>
-          </select>
+        <div class="form-row">
+          <div class="form-group">
+            <label>当前里程（km）</label>
+            <input 
+              type="number" 
+              v-model="vehicleForm.current_mileage"
+              placeholder="当前里程"
+              class="form-input"
+              step="0.01"
+              min="0"
+            >
+          </div>
+          <div class="form-group">
+            <label>燃油类型</label>
+            <select v-model="vehicleForm.fuel_type" class="form-select">
+              <option value="">请选择燃油类型</option>
+              <option value="gasoline">汽油</option>
+              <option value="diesel">柴油</option>
+              <option value="electric">电动</option>
+              <option value="hybrid">混合动力</option>
+              <option value="natural_gas">天然气</option>
+            </select>
+          </div>
         </div>
         
         <div class="form-group">
@@ -290,7 +333,28 @@
             <option value="in_use">使用中</option>
             <option value="maintenance">维修中</option>
             <option value="reserved">已预约</option>
+            <option value="unavailable">不可用</option>
           </select>
+        </div>
+        
+        <div class="form-group">
+          <label>当前司机</label>
+          <select v-model="vehicleForm.current_driver_id" class="form-select">
+            <option value="">请选择司机</option>
+            <option v-for="driver in drivers" :key="driver.user_id" :value="driver.user_id">
+              {{ driver.real_name }} ({{ driver.driver_license_number || '无驾照' }})
+            </option>
+          </select>
+        </div>
+        
+        <div class="form-group">
+          <label>车辆描述</label>
+          <textarea 
+            v-model="vehicleForm.description"
+            placeholder="请输入车辆描述"
+            rows="3"
+            class="form-textarea"
+          ></textarea>
         </div>
         
         <div class="modal-actions">
@@ -348,6 +412,45 @@
         </div>
       </div>
     </div>
+
+    <!-- 删除确认模态框 -->
+    <div v-if="showDeleteModal" class="modal-overlay">
+      <div class="modal-content delete-modal">
+        <div class="delete-icon">⚠️</div>
+        <h3>{{ isBatchDelete ? '批量删除确认' : '删除确认' }}</h3>
+        
+        <div v-if="isBatchDelete" class="delete-content">
+          <p>确定要删除选中的 <strong>{{ selectedVehicles.length }}</strong> 辆车辆吗？</p>
+          <div class="selected-vehicles-list">
+            <div 
+              v-for="vehicle in selectedVehicles" 
+              :key="vehicle.vehicle_id"
+              class="selected-vehicle-item"
+            >
+              <span class="license-plate">{{ vehicle.license_plate }}</span>
+              <span class="vehicle-info">{{ vehicle.brand }} {{ vehicle.model }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="delete-content">
+          <p>确定要删除车辆 <strong>{{ selectedVehicle?.license_plate }}</strong> 吗？</p>
+          <div class="vehicle-detail">
+            <p>品牌型号：{{ selectedVehicle?.brand }} {{ selectedVehicle?.model }}</p>
+            <p>当前状态：{{ getStatusText(selectedVehicle?.status) }}</p>
+          </div>
+        </div>
+        
+        <p class="warning-text">⚠️ 删除后将无法恢复，请谨慎操作！</p>
+        
+        <div class="delete-actions">
+          <button @click="cancelDelete" class="cancel-btn">取消</button>
+          <button @click="confirmDelete" class="delete-confirm-btn">
+            <span v-if="deleting">删除中...</span>
+            <span v-else>确认删除</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -359,6 +462,7 @@ export default {
       user: {},
       vehicles: [],
       fleets: [],
+      drivers: [],
       loading: false,
       
       // 筛选
@@ -366,33 +470,44 @@ export default {
       filterStatus: 'all',
       filterType: 'all',
       
+      // 选择管理
+      selectedVehicles: [],
+      
       // 统计数据
       stats: {
         availableCount: 0,
         inUseCount: 0,
         maintenanceCount: 0,
-        upcomingMaintenance: 0
+        reservedCount: 0,
+        unavailableCount: 0
       },
       
       // 车辆模态框
       showVehicleModal: false,
       showStatusModal: false,
+      showDeleteModal: false,
       isEditing: false,
       selectedVehicle: null,
+      isBatchDelete: false,
+      deleting: false,
       
       // 车辆表单
       vehicleForm: {
         license_plate: '',
         vehicle_type: '',
+        fleet_id: '',
         brand: '',
         model: '',
         color: '',
         year: '',
         capacity: '',
-        current_mileage: '',
+        purchase_date: '',
+        purchase_price: '',
+        description: '',
+        status: 'available',
+        current_mileage: '0',
         fuel_type: '',
-        fleet_id: '',
-        status: 'available'
+        current_driver_id: ''
       },
       
       // 状态变更
@@ -404,50 +519,44 @@ export default {
         { value: 'available', label: '可用', icon: '✅', description: '车辆正常，可以安排使用' },
         { value: 'in_use', label: '使用中', icon: '🚗', description: '车辆正在执行任务' },
         { value: 'maintenance', label: '维修中', icon: '🔧', description: '车辆正在维修保养' },
-        { value: 'reserved', label: '已预约', icon: '📅', description: '车辆已被预约' }
+        { value: 'reserved', label: '已预约', icon: '📅', description: '车辆已被预约' },
+        { value: 'unavailable', label: '不可用', icon: '❌', description: '车辆暂时无法使用' }
       ]
     };
   },
   computed: {
     filteredVehicles() {
-  return this.vehicles.filter(vehicle => {
-    // 1. 搜索筛选
-    if (this.searchKeyword) {
-      const keyword = this.searchKeyword.trim().toLowerCase();
-      
-      // 安全获取各个字段的值，防止为 null 时报错
-      const lp = (vehicle.license_plate || '').toLowerCase();
-      const br = (vehicle.brand || '').toLowerCase();
-      const mo = (vehicle.model || '').toLowerCase();
-
-      const matchLicense = lp.includes(keyword);
-      const matchBrand = br.includes(keyword);
-      const matchModel = mo.includes(keyword);
-
-      // 如果三者都不匹配，则过滤掉
-      if (!matchLicense && !matchBrand && !matchModel) {
-        return false;
-      }
+      return this.vehicles.filter(vehicle => {
+        // 搜索筛选
+        if (this.searchKeyword) {
+          const keyword = this.searchKeyword.toLowerCase();
+          const matchLicense = vehicle.license_plate.toLowerCase().includes(keyword);
+          const matchBrand = vehicle.brand?.toLowerCase().includes(keyword);
+          const matchModel = vehicle.model?.toLowerCase().includes(keyword);
+          if (!matchLicense && !matchBrand && !matchModel) {
+            return false;
+          }
+        }
+        
+        // 状态筛选
+        if (this.filterStatus !== 'all' && vehicle.status !== this.filterStatus) {
+          return false;
+        }
+        
+        // 类型筛选
+        if (this.filterType !== 'all' && vehicle.vehicle_type !== this.filterType) {
+          return false;
+        }
+        
+        return true;
+      });
     }
-    
-    // 2. 状态筛选 (保持不变)
-    if (this.filterStatus !== 'all' && vehicle.status !== this.filterStatus) {
-      return false;
-    }
-    
-    // 3. 类型筛选 (保持不变)
-    if (this.filterType !== 'all' && vehicle.vehicle_type !== this.filterType) {
-      return false;
-    }
-    
-    return true;
-  });
-}
   },
   mounted() {
     this.loadUserInfo();
     this.loadVehicles();
     this.loadFleets();
+    this.loadDrivers();
   },
   methods: {
     loadUserInfo() {
@@ -502,7 +611,9 @@ export default {
           this.fleets = [
             { fleet_id: 1, fleet_name: '小车队' },
             { fleet_id: 2, fleet_name: '商务车队' },
-            { fleet_id: 3, fleet_name: '大客车队' }
+            { fleet_id: 3, fleet_name: '大客车队' },
+            { fleet_id: 4, fleet_name: '货车队' },
+            { fleet_id: 5, fleet_name: '面包车队' }
           ];
         }
       } catch (error) {
@@ -510,7 +621,40 @@ export default {
         this.fleets = [
           { fleet_id: 1, fleet_name: '小车队' },
           { fleet_id: 2, fleet_name: '商务车队' },
-          { fleet_id: 3, fleet_name: '大客车队' }
+          { fleet_id: 3, fleet_name: '大客车队' },
+          { fleet_id: 4, fleet_name: '货车队' },
+          { fleet_id: 5, fleet_name: '面包车队' }
+        ];
+      }
+    },
+    
+    async loadDrivers() {
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('http://localhost:3000/api/admin/drivers', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          if (result.success) {
+            this.drivers = result.data || [];
+          }
+        } else {
+          this.drivers = [
+            { user_id: 1, real_name: '张三', driver_license_number: 'A12345678' },
+            { user_id: 2, real_name: '李四', driver_license_number: 'B87654321' },
+            { user_id: 3, real_name: '王五', driver_license_number: 'C12348765' }
+          ];
+        }
+      } catch (error) {
+        console.error('加载司机列表失败:', error);
+        this.drivers = [
+          { user_id: 1, real_name: '张三', driver_license_number: 'A12345678' },
+          { user_id: 2, real_name: '李四', driver_license_number: 'B87654321' },
+          { user_id: 3, real_name: '王五', driver_license_number: 'C12348765' }
         ];
       }
     },
@@ -520,7 +664,8 @@ export default {
         availableCount: this.vehicles.filter(v => v.status === 'available').length,
         inUseCount: this.vehicles.filter(v => v.status === 'in_use').length,
         maintenanceCount: this.vehicles.filter(v => v.status === 'maintenance').length,
-        upcomingMaintenance: this.vehicles.filter(v => v.next_maintenance && new Date(v.next_maintenance) <= new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)).length
+        reservedCount: this.vehicles.filter(v => v.status === 'reserved').length,
+        unavailableCount: this.vehicles.filter(v => v.status === 'unavailable').length
       };
     },
     
@@ -539,8 +684,10 @@ export default {
           fuel_type: 'gasoline',
           status: 'available',
           fleet_name: '小车队',
-          last_maintenance: '2024-01-15',
-          next_maintenance: '2024-04-15'
+          purchase_date: '2022-03-15',
+          purchase_price: 420000.00,
+          current_driver_name: '张三',
+          description: '公司高管用车'
         },
         {
           vehicle_id: 2,
@@ -555,8 +702,10 @@ export default {
           fuel_type: 'gasoline',
           status: 'in_use',
           fleet_name: '小车队',
-          last_maintenance: '2024-01-10',
-          next_maintenance: '2024-04-10'
+          purchase_date: '2021-06-10',
+          purchase_price: 480000.00,
+          current_driver_name: '李四',
+          description: '商务接待用车'
         },
         {
           vehicle_id: 3,
@@ -571,8 +720,10 @@ export default {
           fuel_type: 'diesel',
           status: 'maintenance',
           fleet_name: '商务车队',
-          last_maintenance: '2023-12-20',
-          next_maintenance: '2024-03-20'
+          purchase_date: '2023-02-20',
+          purchase_price: 680000.00,
+          current_driver_name: '',
+          description: '团队出行用车'
         },
         {
           vehicle_id: 4,
@@ -587,8 +738,46 @@ export default {
           fuel_type: 'diesel',
           status: 'available',
           fleet_name: '大客车队',
-          last_maintenance: '2024-01-05',
-          next_maintenance: '2024-04-05'
+          purchase_date: '2020-08-05',
+          purchase_price: 980000.00,
+          current_driver_name: '',
+          description: '公司班车'
+        },
+        {
+          vehicle_id: 5,
+          license_plate: '京B12345',
+          vehicle_type: 'truck',
+          brand: '解放',
+          model: 'J6P',
+          color: '红色',
+          year: 2019,
+          capacity: 2,
+          current_mileage: 185600.5,
+          fuel_type: 'diesel',
+          status: 'available',
+          fleet_name: '货车队',
+          purchase_date: '2019-11-30',
+          purchase_price: 350000.00,
+          current_driver_name: '王五',
+          description: '货物运输车辆'
+        },
+        {
+          vehicle_id: 6,
+          license_plate: '京C67890',
+          vehicle_type: 'van',
+          brand: '金杯',
+          model: '海狮',
+          color: '白色',
+          year: 2021,
+          capacity: 8,
+          current_mileage: 75600.3,
+          fuel_type: 'gasoline',
+          status: 'reserved',
+          fleet_name: '面包车队',
+          purchase_date: '2021-04-18',
+          purchase_price: 120000.00,
+          current_driver_name: '',
+          description: '小型货物运输'
         }
       ];
       this.calculateStats();
@@ -598,7 +787,9 @@ export default {
       const typeMap = {
         small: '小型车',
         business: '商务车',
-        coach: '大客车'
+        coach: '大客车',
+        truck: '货车',
+        van: '面包车'
       };
       return typeMap[type] || type;
     },
@@ -608,25 +799,187 @@ export default {
         available: '可用',
         in_use: '使用中',
         maintenance: '维修中',
-        reserved: '已预约'
+        reserved: '已预约',
+        unavailable: '不可用'
       };
       return statusMap[status] || status;
     },
     
+    getFuelTypeText(fuelType) {
+      const fuelMap = {
+        gasoline: '汽油',
+        diesel: '柴油',
+        electric: '电动',
+        hybrid: '混合动力',
+        natural_gas: '天然气'
+      };
+      return fuelMap[fuelType] || fuelType || '--';
+    },
+    
+    formatDate(date) {
+      if (!date) return '--';
+      return new Date(date).toLocaleDateString('zh-CN');
+    },
+    
+    // 选择管理方法
+    toggleSelect(vehicle, event) {
+      event.stopPropagation();
+      const vehicleId = vehicle.vehicle_id;
+      const index = this.selectedVehicles.findIndex(v => v.vehicle_id === vehicleId);
+      
+      if (index === -1) {
+        this.selectedVehicles.push(vehicle);
+      } else {
+        this.selectedVehicles.splice(index, 1);
+      }
+    },
+    
+    isSelected(vehicleId) {
+      return this.selectedVehicles.some(v => v.vehicle_id === vehicleId);
+    },
+    
+    clearSelection() {
+      this.selectedVehicles = [];
+    },
+    
+    // 删除相关方法
+    canDeleteVehicle(vehicle) {
+      // 检查车辆是否可以删除
+      // 使用中、已预约的车辆不能删除
+      return vehicle.status !== 'in_use' && vehicle.status !== 'reserved';
+    },
+    
+    showDeleteConfirm(vehicle) {
+      if (!this.canDeleteVehicle(vehicle)) {
+        alert('该车辆正在使用中或已被预约，无法删除');
+        return;
+      }
+      
+      this.selectedVehicle = vehicle;
+      this.isBatchDelete = false;
+      this.showDeleteModal = true;
+    },
+    
+    showBatchDeleteConfirm() {
+      // 检查是否有不能删除的车辆
+      const cannotDeleteVehicles = this.selectedVehicles.filter(v => !this.canDeleteVehicle(v));
+      if (cannotDeleteVehicles.length > 0) {
+        const vehicleNames = cannotDeleteVehicles.map(v => v.license_plate).join(', ');
+        alert(`以下车辆无法删除：${vehicleNames}\n原因：车辆正在使用中或已被预约`);
+        return;
+      }
+      
+      this.isBatchDelete = true;
+      this.showDeleteModal = true;
+    },
+    
+    async confirmDelete() {
+      this.deleting = true;
+      
+      try {
+        const token = localStorage.getItem('token');
+        
+        if (this.isBatchDelete) {
+          // 批量删除
+          const vehicleIds = this.selectedVehicles.map(v => v.vehicle_id);
+          
+          // 如果有后端批量删除接口
+          const response = await fetch('http://localhost:3000/api/vehicles/batch-delete', {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify({ vehicle_ids: vehicleIds })
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            if (result.success) {
+              // 从前端列表中移除已删除的车辆
+              this.vehicles = this.vehicles.filter(v => !vehicleIds.includes(v.vehicle_id));
+              this.calculateStats();
+              alert(`成功删除 ${vehicleIds.length} 辆车辆`);
+            }
+          } else {
+            // 如果没有批量删除接口，逐个删除
+            for (const vehicleId of vehicleIds) {
+              await this.deleteSingleVehicle(vehicleId, token);
+            }
+            alert(`成功删除 ${vehicleIds.length} 辆车辆`);
+          }
+        } else {
+          // 单个删除
+          await this.deleteSingleVehicle(this.selectedVehicle.vehicle_id, token);
+          alert('车辆删除成功');
+        }
+        
+        this.showDeleteModal = false;
+        this.selectedVehicle = null;
+        this.selectedVehicles = [];
+        
+      } catch (error) {
+        console.error('删除车辆失败:', error);
+        alert('删除失败：' + error.message);
+      } finally {
+        this.deleting = false;
+      }
+    },
+    
+    async deleteSingleVehicle(vehicleId, token) {
+      try {
+        const response = await fetch(`http://localhost:3000/api/vehicles/${vehicleId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        
+        if (response.ok) {
+          const result = await response.json();
+          if (result.success) {
+            // 从前端列表中移除已删除的车辆
+            const index = this.vehicles.findIndex(v => v.vehicle_id === vehicleId);
+            if (index !== -1) {
+              this.vehicles.splice(index, 1);
+              this.calculateStats();
+            }
+          }
+        } else {
+          throw new Error('删除失败');
+        }
+      } catch (error) {
+        console.error(`删除车辆 ${vehicleId} 失败:`, error);
+        throw error;
+      }
+    },
+    
+    cancelDelete() {
+      this.showDeleteModal = false;
+      this.selectedVehicle = null;
+      this.isBatchDelete = false;
+      this.deleting = false;
+    },
+    
+    // 车辆表单方法
     showAddVehicle() {
       this.isEditing = false;
       this.vehicleForm = {
         license_plate: '',
         vehicle_type: '',
+        fleet_id: '',
         brand: '',
         model: '',
         color: '',
         year: '',
         capacity: '',
-        current_mileage: '',
+        purchase_date: '',
+        purchase_price: '',
+        description: '',
+        status: 'available',
+        current_mileage: '0',
         fuel_type: '',
-        fleet_id: '',
-        status: 'available'
+        current_driver_id: ''
       };
       this.showVehicleModal = true;
     },
@@ -732,15 +1085,8 @@ export default {
       }
     },
     
-    viewVehicleDetail(vehicle) {
-      alert(`查看车辆详情: ${vehicle.license_plate}\n状态: ${this.getStatusText(vehicle.status)}`);
-    },
-    
-    showMaintenanceSchedule() {
-      alert('保养计划功能开发中...');
-    },
-    
     refreshData() {
+      this.clearSelection();
       this.loadVehicles();
     },
     
@@ -748,6 +1094,7 @@ export default {
       this.searchKeyword = '';
       this.filterStatus = 'all';
       this.filterType = 'all';
+      this.clearSelection();
     },
     
     goToDashboard() {
@@ -767,6 +1114,62 @@ export default {
 </script>
 
 <style scoped>
+/* 样式保持不变，只是微调了一些地方以适应新的字段 */
+.vehicle-info {
+  margin-bottom: 20px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.info-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 14px;
+}
+
+.info-item:hover {
+  background-color: #f9f9f9;
+}
+
+.info-label {
+  color: #666;
+  font-weight: 500;
+  min-width: 100px;
+}
+
+.info-value {
+  color: #333;
+  font-weight: 600;
+  text-align: right;
+  flex: 1;
+}
+
+.vehicle-footer .description {
+  font-size: 13px;
+  color: #666;
+  padding: 10px;
+  background-color: #f9f9f9;
+  border-radius: 8px;
+  border-left: 3px solid #1890ff;
+  margin-top: 10px;
+}
+
+/* 统计卡片微调 */
+.stat-card:nth-child(5) {
+  grid-column: span 2;
+  justify-content: center;
+}
+
+@media (max-width: 768px) {
+  .stat-card:nth-child(5) {
+    grid-column: span 1;
+  }
+}
+
+/* 其他样式保持不变，以下是原有样式 */
+
 .vehicles-page {
   min-height: 100vh;
   background: linear-gradient(135deg, #f5f7fa 0%, #e4edf5 100%);
@@ -922,7 +1325,8 @@ export default {
 }
 
 .add-btn,
-.refresh-btn {
+.refresh-btn,
+.delete-btn {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -948,14 +1352,21 @@ export default {
   color: white;
 }
 
+.delete-btn {
+  background: linear-gradient(135deg, #ff4d4f, #ff7875);
+  color: white;
+}
+
 .add-btn:hover,
-.refresh-btn:hover {
+.refresh-btn:hover,
+.delete-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
 }
 
 .add-btn:active,
-.refresh-btn:active {
+.refresh-btn:active,
+.delete-btn:active {
   transform: translateY(0);
 }
 
@@ -1040,6 +1451,90 @@ export default {
   box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.1);
 }
 
+/* 批量操作提示 */
+.batch-action-bar {
+  background: linear-gradient(135deg, #fff2e8, #ffffff);
+  border: 2px solid #ffd591;
+  border-radius: 20px;
+  padding: 20px 28px;
+  margin-bottom: 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 8px 24px rgba(255, 141, 16, 0.1);
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.batch-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.selected-count {
+  font-size: 16px;
+  font-weight: 600;
+  color: #fa8c16;
+  background: rgba(250, 140, 22, 0.1);
+  padding: 8px 16px;
+  border-radius: 12px;
+}
+
+.batch-actions {
+  display: flex;
+  gap: 16px;
+}
+
+.cancel-selection-btn,
+.batch-delete-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.cancel-selection-btn {
+  background: #f8f9fa;
+  color: #666;
+  border: 2px solid #e8e8e8;
+}
+
+.batch-delete-btn {
+  background: linear-gradient(135deg, #ff4d4f, #ff7875);
+  color: white;
+  box-shadow: 0 4px 12px rgba(255, 77, 79, 0.3);
+}
+
+.cancel-selection-btn:hover {
+  background: #e9ecef;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.batch-delete-btn:hover {
+  background: linear-gradient(135deg, #ff7875, #ff4d4f);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 77, 79, 0.4);
+}
+
 /* 统计卡片 */
 .stats-cards {
   display: grid;
@@ -1118,9 +1613,14 @@ export default {
   color: #fa8c16; 
 }
 
-.stat-icon.schedule { 
+.stat-icon.reserved { 
   background: linear-gradient(135deg, #f9f0ff, #ffffff); 
   color: #722ed1; 
+}
+
+.stat-icon.unavailable { 
+  background: linear-gradient(135deg, #fff1f0, #ffffff); 
+  color: #ff4d4f; 
 }
 
 .stat-content {
@@ -1232,7 +1732,7 @@ export default {
 /* 车辆网格 */
 .vehicles-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
   gap: 25px;
 }
 
@@ -1254,6 +1754,12 @@ export default {
   border-color: #1890ff;
 }
 
+.vehicle-card.selected {
+  border-color: #1890ff;
+  background: linear-gradient(135deg, #f0f9ff, #ffffff);
+  box-shadow: 0 8px 24px rgba(24, 144, 255, 0.2);
+}
+
 .vehicle-card::before {
   content: '';
   position: absolute;
@@ -1267,6 +1773,10 @@ export default {
 }
 
 .vehicle-card:hover::before {
+  opacity: 1;
+}
+
+.vehicle-card.selected::before {
   opacity: 1;
 }
 
@@ -1286,6 +1796,10 @@ export default {
   border-left: 6px solid #722ed1;
 }
 
+.vehicle-card.unavailable {
+  border-left: 6px solid #ff4d4f;
+}
+
 .vehicle-header {
   display: flex;
   justify-content: space-between;
@@ -1295,6 +1809,34 @@ export default {
   border-bottom: 2px solid #f0f0f0;
 }
 
+.selection-checkbox {
+  margin-right: 12px;
+}
+
+.checkbox {
+  width: 24px;
+  height: 24px;
+  border: 2px solid #d9d9d9;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background: white;
+}
+
+.checkbox.checked {
+  background: #1890ff;
+  border-color: #1890ff;
+  color: white;
+}
+
+.checkbox:hover {
+  border-color: #1890ff;
+  transform: scale(1.1);
+}
+
 .vehicle-badge {
   padding: 8px 20px;
   border-radius: 25px;
@@ -1302,6 +1844,9 @@ export default {
   font-weight: 600;
   letter-spacing: 0.5px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  flex: 1;
+  margin: 0 12px;
+  text-align: center;
 }
 
 .vehicle-badge.available {
@@ -1324,13 +1869,18 @@ export default {
   color: white;
 }
 
+.vehicle-badge.unavailable {
+  background: linear-gradient(135deg, #ff4d4f, #ff7875);
+  color: white;
+}
+
 .vehicle-actions {
   display: flex;
-  gap: 12px;
+  gap: 8px;
 }
 
 .action-btn {
-  padding: 8px 18px;
+  padding: 8px 16px;
   border: 2px solid;
   background: white;
   border-radius: 10px;
@@ -1339,6 +1889,7 @@ export default {
   cursor: pointer;
   transition: all 0.3s ease;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  white-space: nowrap;
 }
 
 .action-btn.edit {
@@ -1351,12 +1902,24 @@ export default {
   border-color: #52c41a;
 }
 
-.action-btn:hover {
+.action-btn.delete {
+  color: #ff4d4f;
+  border-color: #ff4d4f;
+}
+
+.action-btn.delete:disabled {
+  color: #ccc;
+  border-color: #ccc;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.action-btn:hover:not(:disabled) {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
 }
 
-.action-btn:active {
+.action-btn:active:not(:disabled) {
   transform: translateY(0);
 }
 
@@ -1377,64 +1940,6 @@ export default {
 .vehicle-card:hover .vehicle-plate {
   background: linear-gradient(135deg, #e6f7ff, #ffffff);
   border-color: #bae7ff;
-}
-
-.vehicle-info {
-  margin-bottom: 25px;
-}
-
-.info-item {
-  display: flex;
-  justify-content: space-between;
-  padding: 14px 0;
-  border-bottom: 1px dashed #f0f0f0;
-  transition: all 0.2s ease;
-}
-
-.info-item:hover {
-  background: #f8f9fa;
-  border-radius: 8px;
-  padding: 14px 12px;
-  transform: translateX(5px);
-}
-
-.info-item:last-child {
-  border-bottom: none;
-}
-
-.info-label {
-  color: #666;
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.info-value {
-  color: #333;
-  font-weight: 600;
-  font-size: 15px;
-}
-
-.vehicle-footer {
-  padding-top: 20px;
-  border-top: 2px solid #f0f0f0;
-  display: flex;
-  justify-content: space-between;
-  font-size: 14px;
-  color: #666;
-  font-weight: 500;
-}
-
-.last-maintenance,
-.next-maintenance {
-  padding: 8px 16px;
-  background: #f8f9fa;
-  border-radius: 12px;
-  transition: all 0.3s ease;
-}
-
-.vehicle-card:hover .last-maintenance,
-.vehicle-card:hover .next-maintenance {
-  background: #e6f7ff;
 }
 
 /* 模态框 */
@@ -1458,7 +1963,7 @@ export default {
   border-radius: 24px;
   padding: 32px;
   width: 90%;
-  max-width: 600px;
+  max-width: 800px;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
@@ -1486,6 +1991,136 @@ export default {
   border-bottom: 2px solid #f0f0f0;
 }
 
+/* 删除确认模态框 */
+.delete-modal {
+  max-width: 500px;
+  text-align: center;
+}
+
+.delete-icon {
+  font-size: 64px;
+  margin-bottom: 20px;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+.delete-content {
+  margin: 24px 0;
+  text-align: left;
+}
+
+.selected-vehicles-list {
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 16px 0;
+  padding: 16px;
+  background: #f8f9fa;
+  border-radius: 12px;
+  border: 2px solid #f0f0f0;
+}
+
+.selected-vehicle-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: white;
+  border-radius: 8px;
+  margin-bottom: 8px;
+  border: 1px solid #e8e8e8;
+  transition: all 0.2s ease;
+}
+
+.selected-vehicle-item:last-child {
+  margin-bottom: 0;
+}
+
+.selected-vehicle-item:hover {
+  border-color: #1890ff;
+  background: #f0f9ff;
+}
+
+.license-plate {
+  font-weight: 600;
+  color: #333;
+  font-size: 16px;
+}
+
+.vehicle-info {
+  font-size: 14px;
+  color: #666;
+}
+
+.vehicle-detail {
+  background: #f8f9fa;
+  border-radius: 12px;
+  padding: 16px;
+  margin: 16px 0;
+  border: 2px solid #f0f0f0;
+}
+
+.vehicle-detail p {
+  margin: 8px 0;
+  font-size: 15px;
+  color: #333;
+}
+
+.warning-text {
+  color: #ff4d4f;
+  font-weight: 600;
+  text-align: center;
+  margin: 20px 0;
+  font-size: 15px;
+  padding: 12px 16px;
+  background: #fff2f0;
+  border-radius: 12px;
+  border: 2px solid #ffccc7;
+}
+
+.delete-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 2px solid #f0f0f0;
+}
+
+.delete-confirm-btn {
+  flex: 1;
+  padding: 16px;
+  background: linear-gradient(135deg, #ff4d4f, #ff7875);
+  color: white;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 4px 12px rgba(255, 77, 79, 0.3);
+}
+
+.delete-confirm-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #ff7875, #ff4d4f);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 77, 79, 0.4);
+}
+
+.delete-confirm-btn:disabled {
+  background: linear-gradient(135deg, #bfbfbf, #8c8c8c);
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* 其他模态框样式 */
 .form-group {
   margin-bottom: 20px;
 }
@@ -1660,7 +2295,7 @@ export default {
 /* 响应式设计 */
 @media (max-width: 1024px) {
   .vehicles-grid {
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
   }
 }
 
@@ -1687,9 +2322,15 @@ export default {
     gap: 20px;
   }
   
+  .action-left {
+    flex-direction: column;
+    width: 100%;
+  }
+  
   .action-right {
     flex-direction: column;
     align-items: stretch;
+    width: 100%;
   }
   
   .search-input {
@@ -1717,6 +2358,37 @@ export default {
     padding: 24px;
     margin: 0 16px;
   }
+  
+  .batch-action-bar {
+    flex-direction: column;
+    gap: 16px;
+  }
+  
+  .batch-info {
+    flex-direction: column;
+    gap: 16px;
+    align-items: stretch;
+  }
+  
+  .batch-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+  
+  .cancel-selection-btn,
+  .batch-delete-btn {
+    width: 100%;
+  }
+  
+  .vehicle-header {
+    flex-wrap: wrap;
+  }
+  
+  .vehicle-actions {
+    width: 100%;
+    justify-content: space-between;
+    margin-top: 12px;
+  }
 }
 
 @media (max-width: 480px) {
@@ -1726,12 +2398,10 @@ export default {
   
   .vehicle-actions {
     flex-direction: column;
-    width: 100%;
   }
   
   .action-btn {
     width: 100%;
-    justify-content: center;
   }
   
   .vehicle-footer {
@@ -1739,18 +2409,19 @@ export default {
     gap: 12px;
   }
   
-  .last-maintenance,
-  .next-maintenance {
+  .description {
     width: 100%;
     text-align: center;
   }
   
-  .modal-actions {
+  .modal-actions,
+  .delete-actions {
     flex-direction: column;
   }
   
   .cancel-btn,
-  .confirm-btn {
+  .confirm-btn,
+  .delete-confirm-btn {
     width: 100%;
   }
 }

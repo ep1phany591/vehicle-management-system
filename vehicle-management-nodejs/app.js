@@ -1118,7 +1118,13 @@ app.put('/api/users/:id/admin', authenticateToken, requireRole('admin'), upload.
 // 获取所有车辆
 app.get('/api/vehicles', authenticateToken, async (req, res) => {
   try {
-    let query = 'SELECT v.*, f.fleet_name FROM vehicles v LEFT JOIN fleets f ON v.fleet_id = f.fleet_id';
+    // 添加左连接获取司机信息
+    let query = `
+      SELECT v.*, f.fleet_name, u.real_name as current_driver_name 
+      FROM vehicles v 
+      LEFT JOIN fleets f ON v.fleet_id = f.fleet_id
+      LEFT JOIN users u ON v.current_driver_id = u.user_id
+    `;
     const params = [];
     
     // 如果是队长，只能看到自己车队的车辆
@@ -1127,7 +1133,7 @@ app.get('/api/vehicles', authenticateToken, async (req, res) => {
       params.push(req.user.fleet_id);
     }
     
-    query += ' ORDER BY v.vehicle_id';
+    query += ' ORDER BY v.created_at DESC';
     
     console.log('🚗 获取车辆查询:', query, params);
     
@@ -1153,9 +1159,10 @@ app.get('/api/vehicles/:id', authenticateToken, async (req, res) => {
     const vehicleId = req.params.id;
     
     const [vehicles] = await pool.query(
-      `SELECT v.*, f.fleet_name 
+      `SELECT v.*, f.fleet_name, u.real_name as current_driver_name
        FROM vehicles v 
-       LEFT JOIN fleets f ON v.fleet_id = f.fleet_id 
+       LEFT JOIN fleets f ON v.fleet_id = f.fleet_id
+       LEFT JOIN users u ON v.current_driver_id = u.user_id
        WHERE v.vehicle_id = ?`,
       [vehicleId]
     );
@@ -1208,7 +1215,11 @@ app.post('/api/vehicles', authenticateToken, requireRole('admin', 'manager'), as
       year,
       fuel_type = 'gasoline',
       current_mileage = 0,
-      capacity = 5
+      capacity = 5,
+      purchase_date,
+      purchase_price,
+      description,
+      current_driver_id
     } = req.body;
     
     // 验证必需字段
@@ -1236,11 +1247,20 @@ app.post('/api/vehicles', authenticateToken, requireRole('admin', 'manager'), as
     }
     
     // 验证车辆类型
-    const validTypes = ['small', 'business', 'coach'];
+    const validTypes = ['small', 'business', 'coach', 'truck', 'van'];
     if (!validTypes.includes(vehicle_type)) {
       return res.status(400).json({
         success: false,
         message: '无效的车辆类型'
+      });
+    }
+    
+    // 验证状态
+    const validStatuses = ['available', 'in_use', 'maintenance', 'reserved', 'unavailable'];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: '无效的状态值'
       });
     }
     
@@ -1269,11 +1289,34 @@ app.post('/api/vehicles', authenticateToken, requireRole('admin', 'manager'), as
       console.log('✅ 确定车队ID:', targetFleetId);
     }
     
+    // 如果有司机ID，验证司机存在且是司机角色
+    if (current_driver_id) {
+      const [driver] = await pool.query(
+        'SELECT user_id, role FROM users WHERE user_id = ?',
+        [current_driver_id]
+      );
+      
+      if (driver.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: '指定的司机不存在'
+        });
+      }
+      
+      if (driver[0].role !== 'driver') {
+        return res.status(400).json({
+          success: false,
+          message: '指定用户不是司机'
+        });
+      }
+    }
+    
     const query = `
       INSERT INTO vehicles 
       (license_plate, vehicle_type, brand, model, color, status, 
-       fleet_id, year, fuel_type, current_mileage, capacity) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       fleet_id, year, fuel_type, current_mileage, capacity,
+       purchase_date, purchase_price, description, current_driver_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     
     const params = [
@@ -1287,7 +1330,11 @@ app.post('/api/vehicles', authenticateToken, requireRole('admin', 'manager'), as
       year ? parseInt(year) : null,
       fuel_type,
       current_mileage ? parseFloat(current_mileage) : 0,
-      capacity ? parseInt(capacity) : 5
+      capacity ? parseInt(capacity) : 5,
+      purchase_date || null,
+      purchase_price ? parseFloat(purchase_price) : null,
+      description || null,
+      current_driver_id || null
     ];
     
     console.log('📝 SQL查询:', query);
@@ -1299,9 +1346,10 @@ app.post('/api/vehicles', authenticateToken, requireRole('admin', 'manager'), as
     
     // 获取新添加的车辆详情
     const [newVehicle] = await pool.query(
-      `SELECT v.*, f.fleet_name 
+      `SELECT v.*, f.fleet_name, u.real_name as current_driver_name
        FROM vehicles v 
-       LEFT JOIN fleets f ON v.fleet_id = f.fleet_id 
+       LEFT JOIN fleets f ON v.fleet_id = f.fleet_id
+       LEFT JOIN users u ON v.current_driver_id = u.user_id
        WHERE v.vehicle_id = ?`,
       [result.insertId]
     );
@@ -1337,26 +1385,11 @@ app.post('/api/vehicles', authenticateToken, requireRole('admin', 'manager'), as
   }
 });
 
-// 更新车辆信息 - 修正版本（只包含数据库存在的字段）
+// 更新车辆信息
 app.put('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager'), async (req, res) => {
   try {
     const vehicleId = req.params.id;
     console.log('📝 更新车辆请求:', vehicleId, req.body);
-    
-    // 只包含数据库中存在的字段
-    const {
-      license_plate,
-      vehicle_type,
-      brand,
-      model,
-      color,
-      status,
-      fleet_id,
-      year,
-      fuel_type,
-      current_mileage,
-      capacity
-    } = req.body;
     
     // 检查车辆是否存在
     const [vehicles] = await pool.query(
@@ -1382,10 +1415,10 @@ app.put('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager'),
     }
     
     // 如果修改车牌号，检查是否重复
-    if (license_plate && license_plate !== vehicle.license_plate) {
+    if (req.body.license_plate && req.body.license_plate !== vehicle.license_plate) {
       const [existing] = await pool.query(
         'SELECT * FROM vehicles WHERE license_plate = ? AND vehicle_id != ?',
-        [license_plate, vehicleId]
+        [req.body.license_plate, vehicleId]
       );
       
       if (existing.length > 0) {
@@ -1396,36 +1429,81 @@ app.put('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager'),
       }
     }
     
-    // 构建更新字段 - 只包含数据库存在的字段
+    // 如果有司机ID，验证司机存在且是司机角色
+    if (req.body.current_driver_id) {
+      const [driver] = await pool.query(
+        'SELECT user_id, role FROM users WHERE user_id = ?',
+        [req.body.current_driver_id]
+      );
+      
+      if (driver.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: '指定的司机不存在'
+        });
+      }
+      
+      if (driver[0].role !== 'driver') {
+        return res.status(400).json({
+          success: false,
+          message: '指定用户不是司机'
+        });
+      }
+    }
+    
+    // 构建更新字段
     const updates = [];
     const params = [];
     
-    // 验证并添加字段
+    // 定义允许更新的字段及其处理函数
     const fieldMappings = {
-      license_plate: 'license_plate',
-      vehicle_type: 'vehicle_type',
-      brand: 'brand',
-      model: 'model',
-      color: 'color',
-      status: 'status',
-      fleet_id: 'fleet_id',
-      year: 'year',
-      fuel_type: 'fuel_type',
-      current_mileage: 'current_mileage',
-      capacity: 'capacity'
+      license_plate: (val) => val,
+      vehicle_type: (val) => {
+        const validTypes = ['small', 'business', 'coach', 'truck', 'van'];
+        if (!validTypes.includes(val)) {
+          throw new Error('无效的车辆类型');
+        }
+        return val;
+      },
+      brand: (val) => val || null,
+      model: (val) => val || null,
+      color: (val) => val || null,
+      status: (val) => {
+        const validStatuses = ['available', 'in_use', 'maintenance', 'reserved', 'unavailable'];
+        if (!validStatuses.includes(val)) {
+          throw new Error('无效的状态值');
+        }
+        return val;
+      },
+      fleet_id: (val) => {
+        // 如果是队长，只能设置到自己管理的车队
+        if (req.user.role === 'manager') {
+          return req.user.fleet_id;
+        }
+        return val || null;
+      },
+      year: (val) => val ? parseInt(val) : null,
+      fuel_type: (val) => val || 'gasoline',
+      current_mileage: (val) => val ? parseFloat(val) : 0,
+      capacity: (val) => val ? parseInt(val) : 5,
+      purchase_date: (val) => val || null,
+      purchase_price: (val) => val ? parseFloat(val) : null,
+      description: (val) => val || null,
+      current_driver_id: (val) => val || null
     };
     
-    Object.entries(fieldMappings).forEach(([key, dbField]) => {
-      if (req.body[key] !== undefined) {
-        updates.push(`${dbField} = ?`);
-        
-        // 类型转换
-        if (key === 'year' || key === 'capacity') {
-          params.push(req.body[key] ? parseInt(req.body[key]) : null);
-        } else if (key === 'current_mileage') {
-          params.push(req.body[key] ? parseFloat(req.body[key]) : null);
-        } else {
-          params.push(req.body[key]);
+    // 处理每个字段
+    Object.entries(fieldMappings).forEach(([field, handler]) => {
+      if (req.body[field] !== undefined) {
+        try {
+          const value = handler(req.body[field]);
+          updates.push(`${field} = ?`);
+          params.push(value);
+        } catch (error) {
+          return res.status(400).json({
+            success: false,
+            message: error.message
+          });
         }
       }
     });
@@ -1436,6 +1514,9 @@ app.put('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager'),
         message: '没有要更新的信息'
       });
     }
+    
+    // 添加更新时间
+    updates.push('updated_at = NOW()');
     
     // 添加车辆ID参数
     params.push(vehicleId);
@@ -1459,9 +1540,10 @@ app.put('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager'),
     
     // 获取更新后的车辆信息
     const [updatedVehicle] = await pool.query(
-      `SELECT v.*, f.fleet_name 
+      `SELECT v.*, f.fleet_name, u.real_name as current_driver_name
        FROM vehicles v 
-       LEFT JOIN fleets f ON v.fleet_id = f.fleet_id 
+       LEFT JOIN fleets f ON v.fleet_id = f.fleet_id
+       LEFT JOIN users u ON v.current_driver_id = u.user_id
        WHERE v.vehicle_id = ?`,
       [vehicleId]
     );
@@ -1488,7 +1570,7 @@ app.put('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager'),
 app.put('/api/vehicles/:id/status', authenticateToken, async (req, res) => {
   try {
     const vehicleId = req.params.id;
-    const { status } = req.body;
+    const { status, maintenance_reason, estimated_finish_time } = req.body;
     
     console.log('🔄 更新车辆状态请求:', { vehicleId, status, user: req.user });
     
@@ -1534,8 +1616,8 @@ app.put('/api/vehicles/:id/status', authenticateToken, async (req, res) => {
       }
     }
     
-    // 验证状态值是否有效 - 根据数据库注释
-    const validStatuses = ['available', 'in_use', 'maintenance', 'reserved','unavailable'];
+    // 验证状态值是否有效
+    const validStatuses = ['available', 'in_use', 'maintenance', 'reserved', 'unavailable'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
@@ -1546,11 +1628,21 @@ app.put('/api/vehicles/:id/status', authenticateToken, async (req, res) => {
     // 记录旧状态
     const oldStatus = vehicle.status;
     
+    // 如果是维修状态，可以更新维修原因
+    const updates = ['status = ?', 'updated_at = NOW()'];
+    const params = [status];
+    
+    // 如果状态变为维修中，且提供了维修原因，可以记录到描述中
+    if (status === 'maintenance' && maintenance_reason) {
+      updates.push('description = CONCAT(IFNULL(description, ""), ?)');
+      params.push(`\n[${new Date().toLocaleString('zh-CN')}] 维修原因: ${maintenance_reason}`);
+    }
+    
+    params.push(vehicleId);
+    
     // 更新车辆状态
-    await pool.query(
-      'UPDATE vehicles SET status = ?, updated_at = NOW() WHERE vehicle_id = ?',
-      [status, vehicleId]
-    );
+    const sql = `UPDATE vehicles SET ${updates.join(', ')} WHERE vehicle_id = ?`;
+    await pool.query(sql, params);
     
     console.log(`✅ 车辆状态更新成功: ${oldStatus} -> ${status}`);
     
@@ -1575,18 +1667,33 @@ app.put('/api/vehicles/:id/status', authenticateToken, async (req, res) => {
   }
 });
 
-// 删除车辆（软删除）
+// 删除车辆
 app.delete('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager'), async (req, res) => {
+  const connection = await pool.getConnection();
+  
   try {
+    await connection.beginTransaction();
+    
     const vehicleId = req.params.id;
     
+    console.log('🚗 开始删除车辆操作 ======================');
+    console.log('📝 请求信息:');
+    console.log('   车辆ID:', vehicleId);
+    console.log('   用户ID:', req.user.user_id);
+    console.log('   用户角色:', req.user.role);
+    console.log('   车队ID:', req.user.fleet_id);
+    
     // 检查车辆是否存在
-    const [vehicles] = await pool.query(
+    console.log('🔍 检查车辆是否存在...');
+    const [vehicles] = await connection.query(
       'SELECT * FROM vehicles WHERE vehicle_id = ?',
       [vehicleId]
     );
     
     if (vehicles.length === 0) {
+      await connection.rollback();
+      connection.release();
+      console.log('❌ 车辆不存在:', vehicleId);
       return res.status(404).json({
         success: false,
         message: '车辆不存在'
@@ -1594,39 +1701,365 @@ app.delete('/api/vehicles/:id', authenticateToken, requireRole('admin', 'manager
     }
     
     const vehicle = vehicles[0];
+    console.log('✅ 找到车辆信息:');
+    console.log('   车牌号:', vehicle.license_plate);
+    console.log('   状态:', vehicle.status);
+    console.log('   车队ID:', vehicle.fleet_id);
+    console.log('   创建时间:', vehicle.created_at);
     
     // 权限检查：队长只能删除自己车队的车辆
-    if (req.user.role === 'manager' && vehicle.fleet_id !== req.user.fleet_id) {
-      return res.status(403).json({
-        success: false,
-        message: '无权删除此车辆'
-      });
+    console.log('🔐 检查权限...');
+    if (req.user.role === 'manager') {
+      console.log('   用户是队长，检查车队权限...');
+      console.log('   用户车队ID:', req.user.fleet_id);
+      console.log('   车辆车队ID:', vehicle.fleet_id);
+      
+      if (vehicle.fleet_id !== req.user.fleet_id) {
+        await connection.rollback();
+        connection.release();
+        console.log('❌ 权限检查失败: 车辆不属于用户管理的车队');
+        return res.status(403).json({
+          success: false,
+          message: '您只能删除自己车队的车辆'
+        });
+      }
+      console.log('✅ 权限检查通过');
+    } else {
+      console.log('✅ 用户是管理员，跳过车队权限检查');
     }
     
     // 检查车辆是否在使用中
+    console.log('📊 检查车辆状态...');
+    console.log('   当前状态:', vehicle.status);
     if (vehicle.status === 'in_use' || vehicle.status === 'reserved') {
+      await connection.rollback();
+      connection.release();
+      console.log('❌ 状态检查失败: 车辆正在使用中');
       return res.status(400).json({
         success: false,
-        message: '车辆正在使用中，无法删除'
+        message: `车辆正在${vehicle.status === 'in_use' ? '使用中' : '已预约'}，无法删除`
       });
     }
+    console.log('✅ 状态检查通过');
     
-    // 软删除：将状态改为maintenance（维修中），代表不可用
-    await pool.query(
-      'UPDATE vehicles SET status = "maintenance", updated_at = NOW() WHERE vehicle_id = ?',
+    // 检查相关数据引用
+    console.log('🔍 检查相关数据引用...');
+    
+    // 检查 applications 表引用
+    const [applications] = await connection.query(
+      'SELECT COUNT(*) as count FROM applications WHERE assigned_vehicle_id = ?',
+      [vehicleId]
+    );
+    console.log('   applications 表引用数:', applications[0].count);
+    
+    // 检查 vehicle_status_history 表引用
+    const [history] = await connection.query(
+      'SELECT COUNT(*) as count FROM vehicle_status_history WHERE vehicle_id = ?',
+      [vehicleId]
+    );
+    console.log('   vehicle_status_history 表引用数:', history[0].count);
+    
+    // 清理相关数据
+    console.log('🗑️ 开始清理相关数据...');
+    
+    // 1. 清理 applications 表中的引用
+    if (applications[0].count > 0) {
+      console.log('   清理 applications 表引用...');
+      const [appResult] = await connection.query(
+        'UPDATE applications SET assigned_vehicle_id = NULL WHERE assigned_vehicle_id = ?',
+        [vehicleId]
+      );
+      console.log(`   清理完成，影响行数: ${appResult.affectedRows}`);
+    } else {
+      console.log('   无需清理 applications 表引用');
+    }
+    
+    // 2. 清理 vehicle_status_history 表记录
+    if (history[0].count > 0) {
+      console.log('   清理 vehicle_status_history 表记录...');
+      const [historyResult] = await connection.query(
+        'DELETE FROM vehicle_status_history WHERE vehicle_id = ?',
+        [vehicleId]
+      );
+      console.log(`   清理完成，影响行数: ${historyResult.affectedRows}`);
+    } else {
+      console.log('   无需清理 vehicle_status_history 表记录');
+    }
+    
+    // 物理删除车辆
+    console.log('🗑️ 开始删除车辆记录...');
+    const [deleteResult] = await connection.query(
+      'DELETE FROM vehicles WHERE vehicle_id = ?',
       [vehicleId]
     );
     
+    console.log('📊 删除结果:');
+    console.log('   影响行数:', deleteResult.affectedRows);
+    console.log('   警告数:', deleteResult.warningCount);
+    
+    if (deleteResult.affectedRows === 0) {
+      await connection.rollback();
+      connection.release();
+      console.log('❌ 删除失败，影响行数为0');
+      return res.status(500).json({
+        success: false,
+        message: '车辆删除失败'
+      });
+    }
+    
+    // 提交事务
+    await connection.commit();
+    connection.release();
+    
+    console.log('✅ 车辆删除成功！');
+    console.log('✅ 删除信息:');
+    console.log('   车辆ID:', vehicleId);
+    console.log('   车牌号:', vehicle.license_plate);
+    console.log('   清理申请记录数:', applications[0].count);
+    console.log('   清理历史记录数:', history[0].count);
+    console.log('🚗 删除车辆操作完成 ======================');
+    
     res.json({
       success: true,
-      message: '车辆已停用（状态设为维修中）'
+      message: `车辆 ${vehicle.license_plate} 删除成功`,
+      data: {
+        vehicle_id: vehicleId,
+        license_plate: vehicle.license_plate,
+        cleaned: {
+          applications: applications[0].count,
+          history: history[0].count
+        }
+      }
     });
     
   } catch (error) {
-    console.error('删除车辆错误:', error);
+    // 确保回滚事务并释放连接
+    try {
+      await connection.rollback();
+      connection.release();
+    } catch (rollbackError) {
+      console.error('回滚事务错误:', rollbackError);
+    }
+    
+    console.error('❌ 删除车辆发生错误:');
+    console.error('   错误代码:', error.code);
+    console.error('   错误消息:', error.message);
+    console.error('   SQL状态:', error.sqlState);
+    console.error('   SQL消息:', error.sqlMessage);
+    
+    // 提供更具体的错误信息
+    let errorMessage = '删除车辆失败';
+    
+    if (error.code === 'ER_ROW_IS_REFERENCED_2' || error.code === '23000') {
+      errorMessage = '存在外键约束，无法删除。请先清理相关数据。';
+    } else if (error.code === 'ER_LOCK_WAIT_TIMEOUT') {
+      errorMessage = '数据库操作超时，请稍后重试。';
+    }
+    
     res.status(500).json({
       success: false,
-      message: '删除车辆失败'
+      message: errorMessage,
+      error: error.message,
+      sqlMessage: error.sqlMessage
+    });
+  }
+});
+
+// 批量删除车辆
+app.delete('/api/vehicles/batch-delete', authenticateToken, requireRole('admin', 'manager'), async (req, res) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const { vehicle_ids } = req.body;
+    
+    console.log('🚗🚗 开始批量删除车辆操作 ======================');
+    console.log('📝 请求信息:');
+    console.log('   用户ID:', req.user.user_id);
+    console.log('   用户角色:', req.user.role);
+    console.log('   车队ID:', req.user.fleet_id);
+    console.log('   要删除的车辆ID:', vehicle_ids);
+    
+    if (!vehicle_ids || !Array.isArray(vehicle_ids) || vehicle_ids.length === 0) {
+      await connection.rollback();
+      connection.release();
+      console.log('❌ 请求参数无效');
+      return res.status(400).json({
+        success: false,
+        message: '请选择要删除的车辆'
+      });
+    }
+    
+    console.log(`🔄 开始处理 ${vehicle_ids.length} 辆车辆...`);
+    
+    // 检查所有车辆是否存在
+    const placeholders = vehicle_ids.map(() => '?').join(',');
+    console.log('🔍 检查车辆是否存在...');
+    const [vehicles] = await connection.query(
+      `SELECT * FROM vehicles WHERE vehicle_id IN (${placeholders})`,
+      vehicle_ids
+    );
+    
+    console.log(`   找到 ${vehicles.length} 辆车辆`);
+    
+    if (vehicles.length !== vehicle_ids.length) {
+      await connection.rollback();
+      connection.release();
+      console.log('❌ 部分车辆不存在');
+      const foundIds = vehicles.map(v => v.vehicle_id);
+      const missingIds = vehicle_ids.filter(id => !foundIds.includes(id));
+      console.log('   未找到的车辆ID:', missingIds);
+      return res.status(404).json({
+        success: false,
+        message: '部分车辆不存在',
+        missing_ids: missingIds
+      });
+    }
+    
+    console.log('✅ 所有车辆都存在');
+    
+    // 检查是否有车辆正在使用中
+    console.log('📊 检查车辆状态...');
+    const inUseVehicles = vehicles.filter(v => v.status === 'in_use' || v.status === 'reserved');
+    if (inUseVehicles.length > 0) {
+      await connection.rollback();
+      connection.release();
+      const inUsePlates = inUseVehicles.map(v => v.license_plate).join(', ');
+      console.log('❌ 部分车辆正在使用中:', inUsePlates);
+      return res.status(400).json({
+        success: false,
+        message: `以下车辆正在使用中，无法删除: ${inUsePlates}`,
+        in_use_vehicles: inUseVehicles.map(v => ({
+          vehicle_id: v.vehicle_id,
+          license_plate: v.license_plate,
+          status: v.status
+        }))
+      });
+    }
+    
+    console.log('✅ 所有车辆状态均可删除');
+    
+    // 如果是队长，检查是否有非自己车队的车辆
+    if (req.user.role === 'manager') {
+      console.log('🔐 队长权限检查...');
+      const unauthorizedVehicles = vehicles.filter(v => v.fleet_id !== req.user.fleet_id);
+      if (unauthorizedVehicles.length > 0) {
+        await connection.rollback();
+        connection.release();
+        const unauthorizedPlates = unauthorizedVehicles.map(v => v.license_plate).join(', ');
+        console.log('❌ 无权删除以下车辆:', unauthorizedPlates);
+        return res.status(403).json({
+          success: false,
+          message: `您无权删除以下车辆: ${unauthorizedPlates}`,
+          unauthorized_vehicles: unauthorizedVehicles.map(v => ({
+            vehicle_id: v.vehicle_id,
+            license_plate: v.license_plate,
+            fleet_id: v.fleet_id
+          }))
+        });
+      }
+      console.log('✅ 权限检查通过');
+    } else {
+      console.log('✅ 管理员，跳过车队权限检查');
+    }
+    
+    // 清理相关数据并删除车辆
+    console.log('🗑️ 开始清理相关数据并删除车辆...');
+    let totalApplicationsCleaned = 0;
+    let totalHistoryCleaned = 0;
+    const deletedVehicles = [];
+    
+    for (const vehicle of vehicles) {
+      try {
+        console.log(`   🔄 处理车辆 ${vehicle.vehicle_id} (${vehicle.license_plate})`);
+        
+        // 1. 清理 applications 表中的引用
+        const [appResult] = await connection.query(
+          'UPDATE applications SET assigned_vehicle_id = NULL WHERE assigned_vehicle_id = ?',
+          [vehicle.vehicle_id]
+        );
+        if (appResult.affectedRows > 0) {
+          console.log(`      清理 applications 引用: ${appResult.affectedRows} 条`);
+          totalApplicationsCleaned += appResult.affectedRows;
+        }
+        
+        // 2. 清理 vehicle_status_history 表记录
+        const [historyResult] = await connection.query(
+          'DELETE FROM vehicle_status_history WHERE vehicle_id = ?',
+          [vehicle.vehicle_id]
+        );
+        if (historyResult.affectedRows > 0) {
+          console.log(`      清理历史记录: ${historyResult.affectedRows} 条`);
+          totalHistoryCleaned += historyResult.affectedRows;
+        }
+        
+        // 3. 删除车辆
+        const [deleteResult] = await connection.query(
+          'DELETE FROM vehicles WHERE vehicle_id = ?',
+          [vehicle.vehicle_id]
+        );
+        
+        if (deleteResult.affectedRows > 0) {
+          deletedVehicles.push({
+            vehicle_id: vehicle.vehicle_id,
+            license_plate: vehicle.license_plate
+          });
+          console.log(`      删除成功`);
+        } else {
+          console.log(`      删除失败，影响行数为0`);
+        }
+        
+      } catch (vehicleError) {
+        console.error(`      处理车辆 ${vehicle.vehicle_id} 时出错:`, vehicleError.message);
+        // 继续处理其他车辆
+      }
+    }
+    
+    // 提交事务
+    await connection.commit();
+    connection.release();
+    
+    console.log('✅ 批量删除完成！');
+    console.log('📊 统计信息:');
+    console.log(`   成功删除车辆: ${deletedVehicles.length} 辆`);
+    console.log(`   清理申请记录: ${totalApplicationsCleaned} 条`);
+    console.log(`   清理历史记录: ${totalHistoryCleaned} 条`);
+    console.log('🚗🚗 批量删除车辆操作完成 ======================');
+    
+    res.json({
+      success: true,
+      message: `成功删除 ${deletedVehicles.length} 辆车辆`,
+      data: {
+        deleted_count: deletedVehicles.length,
+        deleted_vehicles: deletedVehicles,
+        cleaned: {
+          applications: totalApplicationsCleaned,
+          history: totalHistoryCleaned
+        }
+      }
+    });
+    
+  } catch (error) {
+    // 确保回滚事务并释放连接
+    try {
+      await connection.rollback();
+      connection.release();
+    } catch (rollbackError) {
+      console.error('回滚事务错误:', rollbackError);
+    }
+    
+    console.error('❌ 批量删除车辆发生错误:');
+    console.error('   错误代码:', error.code);
+    console.error('   错误消息:', error.message);
+    console.error('   SQL状态:', error.sqlState);
+    console.error('   SQL消息:', error.sqlMessage);
+    
+    res.status(500).json({
+      success: false,
+      message: '批量删除车辆失败',
+      error: error.message,
+      sqlMessage: error.sqlMessage
     });
   }
 });
@@ -1693,12 +2126,80 @@ app.get('/api/vehicles/:id/status-history', authenticateToken, requireRole('admi
     });
   }
 });
+
+// 获取司机列表（用于车辆分配司机）
+app.get('/api/admin/drivers', authenticateToken, requireRole('admin', 'manager'), async (req, res) => {
+  try {
+    let query = `
+      SELECT u.user_id, u.real_name, u.phone, u.driver_license_number, d.driver_status
+      FROM users u
+      LEFT JOIN drivers d ON u.user_id = d.user_id
+      WHERE u.role = 'driver' AND u.status = 'active'
+    `;
+    const params = [];
+    
+    // 如果是队长，只能看到自己车队的司机（如果有车队关联的话）
+    // 这里假设有一个 driver_fleet 表来关联司机和车队
+    // 如果没有这样的表，可以调整逻辑
+    if (req.user.role === 'manager') {
+      query += ' AND d.fleet_id = ?';
+      params.push(req.user.fleet_id);
+    }
+    
+    query += ' ORDER BY u.real_name';
+    
+    const [drivers] = await pool.query(query, params);
+    
+    res.json({
+      success: true,
+      data: drivers
+    });
+    
+  } catch (error) {
+    console.error('获取司机列表错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取司机列表失败'
+    });
+  }
+});
+
+// 获取车队列表
+app.get('/api/admin/fleets', authenticateToken, requireRole('admin', 'manager'), async (req, res) => {
+  try {
+    let query = 'SELECT fleet_id, fleet_name FROM fleets WHERE 1=1';
+    const params = [];
+    
+    // 如果是队长，只能看到自己管理的车队
+    if (req.user.role === 'manager') {
+      query += ' AND manager_id = ?';
+      params.push(req.user.user_id);
+    }
+    
+    query += ' ORDER BY fleet_name';
+    
+    const [fleets] = await pool.query(query, params);
+    
+    res.json({
+      success: true,
+      data: fleets
+    });
+    
+  } catch (error) {
+    console.error('获取车队列表错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取车队列表失败'
+    });
+  }
+});
 // ==================== 申请管理模块 ====================
 // 提交用车申请
 app.post('/api/applications', authenticateToken, async (req, res) => {
   try {
     const { reason, people_count, vehicle_type, start_time, end_time, destination, contact_person, contact_phone, remarks } = req.body;
     
+    // 验证必填字段
     if (!reason || !people_count || !vehicle_type || !start_time || !end_time) {
       return res.status(400).json({
         success: false,
@@ -1706,11 +2207,43 @@ app.post('/api/applications', authenticateToken, async (req, res) => {
       });
     }
     
-    // 验证时间
-   
+    // ========== 时间验证 ==========
+    const now = new Date();
+    const startDate = new Date(start_time);
+    const endDate = new Date(end_time);
     
-   
-    // 检查时间冲突
+    // 1. 结束时间必须晚于开始时间
+    if (endDate <= startDate) {
+      return res.status(400).json({
+        success: false,
+        message: '结束时间必须晚于开始时间'
+      });
+    }
+    
+    // 2. 开始时间必须晚于当前时间
+    if (startDate <= now) {
+      return res.status(400).json({
+        success: false,
+        message: '开始时间必须晚于当前时间'
+      });
+    }
+    
+    // 3. 必须提前至少7天（一周）申请
+    const oneWeekFromNow = new Date(now);
+    oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7);
+    
+    if (startDate < oneWeekFromNow) {
+      // 计算还需要提前多少天
+      const daysNeeded = Math.ceil((oneWeekFromNow - startDate) / (1000 * 60 * 60 * 24));
+      
+      return res.status(400).json({
+        success: false,
+        message: `用车申请必须至少提前一周提交，您的申请还需提前${daysNeeded}天`
+      });
+    }
+    // ========== 时间验证结束 ==========
+    
+    // 检查时间冲突 - 基于车型检查
     const [conflictCheck] = await pool.query(
       `SELECT COUNT(*) as count FROM applications 
        WHERE vehicle_type = ? 
@@ -1722,11 +2255,11 @@ app.post('/api/applications', authenticateToken, async (req, res) => {
     if (conflictCheck[0].count > 0) {
       return res.status(400).json({
         success: false,
-        message: '该时间段车辆已被预约'
+        message: '该时间段该车型已被预约'
       });
     }
     
-    // 插入申请记录
+    // 插入申请记录 - 根据您的表结构
     const [result] = await pool.query(
       `INSERT INTO applications 
        (applicant_id, apply_time, reason, people_count, vehicle_type, start_time, end_time, 
@@ -1747,6 +2280,206 @@ app.post('/api/applications', authenticateToken, async (req, res) => {
     res.status(500).json({
       success: false,
       message: '提交申请失败'
+    });
+  }
+});
+
+// 根据您的数据库表结构，需要修改状态更新接口
+app.put('/api/applications/:id/status', authenticateToken, async (req, res) => {
+  try {
+    const applicationId = req.params.id;
+    const { status, reject_reason, actual_end_time, actual_mileage, fuel_consumption, other_cost, remarks } = req.body;
+    
+    console.log('🔄 更新申请状态:', { applicationId, status, user: req.user.user_id });
+    
+    // 检查申请是否存在
+    const [applications] = await pool.query(
+      'SELECT * FROM applications WHERE application_id = ?',
+      [applicationId]
+    );
+    
+    if (applications.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '申请不存在'
+      });
+    }
+    
+    const application = applications[0];
+    const user = req.user;
+    
+    // 权限检查
+    let canUpdate = false;
+    let updateFields = ['status = ?'];
+    let updateParams = [status];
+    
+    if (user.role === 'admin' || user.role === 'leader') {
+      canUpdate = true;
+      
+      // 如果是管理员批准申请
+      if (status === 'approved') {
+        updateFields.push('approved_by = ?');
+        updateParams.push(user.user_id);
+        updateFields.push('approved_time = NOW()');
+      }
+      
+      // 如果是管理员拒绝申请
+      if (status === 'rejected') {
+        updateFields.push('approved_by = ?');
+        updateParams.push(user.user_id);
+        updateFields.push('approved_time = NOW()');
+        if (reject_reason) {
+          updateFields.push('reject_reason = ?');
+          updateParams.push(reject_reason);
+        }
+      }
+      
+      // 管理员取消申请
+      if (status === 'cancelled') {
+        updateFields.push('cancelled_time = NOW()');
+      }
+    } 
+    else if (user.user_id === application.applicant_id && status === 'cancelled') {
+      // 申请人只能取消待审批状态下的申请
+      canUpdate = application.status === 'pending';
+      if (canUpdate) {
+        updateFields.push('cancelled_time = NOW()');
+      }
+    } 
+    else if (user.role === 'driver') {
+      if (application.assigned_driver_id !== user.user_id) {
+        return res.status(403).json({ success: false, message: '非本人任务' });
+      }
+
+      // 司机接单逻辑
+      if (application.status === 'assigned' && status === 'confirmed') {
+        canUpdate = true;
+      }
+      // 司机拒绝任务逻辑
+      else if (status === 'rejected') {
+        canUpdate = true;
+        if (reject_reason) {
+          updateFields.push('reject_reason = ?');
+          updateParams.push(reject_reason);
+        }
+      }
+      // 开始任务逻辑
+      else if (application.status === 'confirmed' && status === 'in_progress') {
+        canUpdate = true;
+        updateFields.push('actual_start_time = NOW()');
+      }
+      // 完成任务逻辑
+      else if (application.status === 'in_progress' && status === 'completed') {
+        canUpdate = true;
+        updateFields.push('actual_end_time = NOW()');
+        updateFields.push('completed_time = NOW()');
+        
+        if (actual_mileage) {
+          updateFields.push('actual_mileage = ?');
+          updateParams.push(actual_mileage);
+        }
+        
+        if (fuel_consumption) {
+          updateFields.push('fuel_consumption = ?');
+          updateParams.push(fuel_consumption);
+        }
+        
+        if (other_cost) {
+          updateFields.push('other_cost = ?');
+          updateParams.push(other_cost);
+        }
+        
+        if (remarks) {
+          updateFields.push('remarks = ?');
+          updateParams.push(remarks);
+        }
+      }
+    }
+    
+    if (!canUpdate) {
+      return res.status(403).json({
+        success: false,
+        message: '无权更新此申请状态或状态转换无效'
+      });
+    }
+
+    // 添加更新时间
+    updateFields.push('updated_at = NOW()');
+
+    // --- 开始执行数据库更新 ---
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // 执行 application 表的状态更新
+      const sql = `UPDATE applications SET ${updateFields.join(', ')} WHERE application_id = ?`;
+      await connection.query(sql, [...updateParams, applicationId]);
+
+      // 情况 A: 司机完成任务 -> 累加里程和单数
+      if (user.role === 'driver' && status === 'completed') {
+        // 先检查users表中是否有total_mileage和monthly_trips字段
+        // 如果没有，可能需要先添加这些字段
+        await connection.query(
+          `UPDATE users 
+           SET total_mileage = COALESCE(total_mileage, 0) + ?, 
+               monthly_trips = COALESCE(monthly_trips, 0) + 1,
+               updated_at = NOW()
+           WHERE user_id = ?`,
+          [parseFloat(actual_mileage) || 0, user.user_id]
+        );
+      }
+
+      // 情况 B: 司机拒绝任务 -> 释放资源
+      else if (user.role === 'driver' && status === 'rejected') {
+        // 释放车辆（如果有分配车辆）
+        if (application.assigned_vehicle_id) {
+          await connection.query(
+            `UPDATE vehicles SET status = 'available', current_driver_id = NULL, updated_at = NOW() WHERE vehicle_id = ?`,
+            [application.assigned_vehicle_id]
+          );
+          
+          // 清空申请表中的车辆分配
+          await connection.query(
+            `UPDATE applications SET assigned_vehicle_id = NULL, assigned_driver_id = NULL, assigned_fleet_id = NULL WHERE application_id = ?`,
+            [applicationId]
+          );
+        }
+        
+        // 检查司机是否还有其他任务
+        const [otherTasks] = await connection.query(
+          `SELECT COUNT(*) as count FROM applications WHERE assigned_driver_id = ? AND status IN ('assigned', 'confirmed', 'in_progress') AND application_id != ?`,
+          [user.user_id, applicationId]
+        );
+        
+        // 如果没有其他任务，将司机状态改为on_duty
+        if (otherTasks[0].count === 0) {
+          await connection.query(
+            `UPDATE drivers SET driver_status = 'on_duty', updated_at = NOW() WHERE user_id = ?`,
+            [user.user_id]
+          );
+        }
+      }
+
+      await connection.commit();
+      connection.release();
+      
+      res.json({
+        success: true,
+        message: status === 'completed' ? '任务已完成，数据已统计' : '申请状态更新成功'
+      });
+
+    } catch (transactionError) {
+      await connection.rollback();
+      connection.release();
+      throw transactionError;
+    }
+    
+  } catch (error) {
+    console.error('❌ 更新申请状态错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '更新申请状态失败',
+      error: error.message
     });
   }
 });
@@ -3150,7 +3883,7 @@ app.get('/api/manager/assignments/:id/available-vehicles', authenticateToken, re
     
     // 获取任务的车辆类型和乘车人数
     const [tasks] = await pool.query(
-      'SELECT vehicle_type, people_count FROM applications WHERE application_id = ?',
+      'SELECT vehicle_type, people_count, start_time, end_time FROM applications WHERE application_id = ?',
       [taskId]
     );
     
