@@ -45,15 +45,16 @@ v<template>
               <div class="stat-label">可用车辆</div>
             </div>
           </div>
-          <div class="stat-card" @click="$router.push('/admin/approval')">
-            <div class="stat-icon today">
-              <span>📅</span>
-            </div>
-            <div class="stat-info">
-              <div class="stat-value">{{ stats.todayMissions }}</div>
-              <div class="stat-label">今日出车</div>
-            </div>
-          </div>
+          <div class="stat-card" @click="$router.push('/admin/fleets')">
+  <div class="stat-icon fleet">
+    <!-- 可选图标：🏢 🚙 🚌 🚐 -->
+    <span>🏢</span>
+  </div>
+  <div class="stat-info">
+    <div class="stat-value">{{ stats.totalFleets }}</div>
+    <div class="stat-label">车队管理</div>
+  </div>
+</div>
           <div class="stat-card" @click="$router.push('/admin/statistics')">
             <div class="stat-icon total">
               <span>📊</span>

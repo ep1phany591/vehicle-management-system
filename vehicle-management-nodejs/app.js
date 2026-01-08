@@ -1715,6 +1715,518 @@ app.put('/api/users/me', authenticateToken, upload.single('avatar_file'), async 
     res.status(500).json({ success: false, message: '更新失败' });
   }
 });
+// ==================== 车队管理模块 ====================
+// 1. 新增车队 (对应前端 api.fleet.create)
+app.post('/api/fleets', authenticateToken, async (req, res) => {
+  try {
+    const { fleet_id, fleet_name, fleet_type, manager_id, description } = req.body;
+    const query = `INSERT INTO fleets (fleet_id, fleet_name, fleet_type, manager_id, description) VALUES (?, ?, ?, ?, ?)`;
+    await pool.query(query, [fleet_id, fleet_name, fleet_type, manager_id || null, description]);
+    res.json({ success: true, message: '创建成功' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '创建失败', error: error.message });
+  }
+});
+
+// 2. 修改车队 (对应前端 api.fleet.update)
+app.put('/api/fleets/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fleet_name, fleet_type, manager_id, description } = req.body;
+    const query = `UPDATE fleets SET fleet_name=?, fleet_type=?, manager_id=?, description=? WHERE fleet_id=?`;
+    await pool.query(query, [fleet_name, fleet_type, manager_id || null, description, id]);
+    res.json({ success: true, message: '更新成功' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '更新失败' });
+  }
+});
+
+// 3. 删除车队 (对应前端 api.fleet.delete)
+app.delete('/api/fleets/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM fleets WHERE fleet_id = ?', [id]);
+    res.json({ success: true, message: '删除成功' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: '删除失败' });
+  }
+});
+// 获取车队列表 - 匹配您的 api.js 中的 /api/fleets
+app.get('/api/fleets', authenticateToken, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      search = '',
+      fleet_type = 'all',
+      manager_filter = 'all',
+      sort_by = 'created_at',
+      sort_order = 'desc'
+    } = req.query;
+
+    const offset = (page - 1) * limit;
+    
+    // 构建查询条件
+    let whereClause = 'WHERE 1=1';
+    const params = [];
+    
+    // 搜索条件
+    if (search) {
+      whereClause += ' AND (f.fleet_name LIKE ? OR f.fleet_id LIKE ? OR f.description LIKE ?)';
+      const searchParam = `%${search}%`;
+      params.push(searchParam, searchParam, searchParam);
+    }
+    
+    // 车队类型筛选
+    if (fleet_type !== 'all') {
+      whereClause += ' AND f.fleet_type = ?';
+      params.push(fleet_type);
+    }
+    
+    // 队长筛选
+    if (manager_filter === 'assigned') {
+      whereClause += ' AND f.manager_id IS NOT NULL';
+    } else if (manager_filter === 'unassigned') {
+      whereClause += ' AND f.manager_id IS NULL';
+    }
+    
+    // 获取总数
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM fleets f
+      ${whereClause}
+    `;
+    
+    const [countResult] = await pool.query(countQuery, params);
+    const total = countResult[0].total;
+    
+    // 获取车队数据（包含统计信息）
+    const fleetsQuery = `
+      SELECT 
+        f.*,
+        u.real_name as manager_name,
+        u.phone as manager_phone,
+        -- 车辆数量：统计该车队的车辆（注意：vehicles 表确实有 fleet_id 字段）
+        (SELECT COUNT(*) FROM vehicles v WHERE v.fleet_id = f.fleet_id AND v.status = 'available') as vehicle_count,
+        -- 司机数量：通过 users 表的 fleet_id 统计司机（users 表有 fleet_id 字段）
+        (SELECT COUNT(*) FROM users u2 WHERE u2.fleet_id = f.fleet_id AND u2.role IN ('driver', 'manager', 'admin')) as driver_count
+      FROM fleets f
+      LEFT JOIN users u ON f.manager_id = u.user_id
+      ${whereClause}
+      ORDER BY f.${sort_by} ${sort_order}
+      LIMIT ? OFFSET ?
+    `;
+    
+    params.push(parseInt(limit), offset);
+    const [fleets] = await pool.query(fleetsQuery, params);
+    
+    res.json({
+      success: true,
+      data: fleets,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('获取车队列表失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取车队列表失败',
+      error: error.message
+    });
+  }
+});
+
+// 获取单个车队详情 - 匹配您的 api.js 中的 /api/fleets/:id
+app.get('/api/fleets/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const fleetQuery = `
+      SELECT 
+        f.*,
+        u.real_name as manager_name,
+        u.phone as manager_phone,
+        -- 车辆数量：统计该车队的车辆
+        (SELECT COUNT(*) FROM vehicles v WHERE v.fleet_id = f.fleet_id) as vehicle_count,
+        -- 司机数量：通过 users 表的 fleet_id 统计司机
+        (SELECT COUNT(*) FROM users u2 WHERE u2.fleet_id = f.fleet_id AND u2.role IN ('driver', 'manager', 'admin')) as driver_count
+      FROM fleets f
+      LEFT JOIN users u ON f.manager_id = u.user_id
+      WHERE f.fleet_id = ?
+    `;
+    
+    const [fleets] = await pool.query(fleetQuery, [id]);
+    
+    if (fleets.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '车队不存在'
+      });
+    }
+    
+    const fleet = fleets[0];
+    
+    // 获取车队的车辆详情
+    const vehiclesQuery = `
+      SELECT 
+        vehicle_id,
+        license_plate,
+        vehicle_type,
+        brand,
+        model,
+        color,
+        status,
+        current_mileage
+      FROM vehicles
+      WHERE fleet_id = ?
+      ORDER BY created_at DESC
+      LIMIT 10
+    `;
+    
+    const [vehicles] = await pool.query(vehiclesQuery, [id]);
+    
+    // 获取车队的司机详情
+    const driversQuery = `
+      SELECT 
+        u.user_id,
+        u.real_name,
+        u.phone,
+        u.role,
+        d.driver_id,
+        d.driver_status,
+        d.driving_years,
+        d.license_type
+      FROM users u
+      LEFT JOIN drivers d ON u.user_id = d.user_id
+      WHERE u.fleet_id = ? AND u.role IN ('driver', 'manager', 'admin')
+      ORDER BY u.created_at DESC
+      LIMIT 10
+    `;
+    
+    const [drivers] = await pool.query(driversQuery, [id]);
+    
+    res.json({
+      success: true,
+      data: {
+        ...fleet,
+        vehicles,
+        drivers
+      }
+    });
+  } catch (error) {
+    console.error('获取车队详情失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取车队详情失败'
+    });
+  }
+});
+
+// 搜索车队 - 匹配您的 api.js 中的 /api/fleets/search/:keyword
+app.get('/api/fleets/search/:keyword', authenticateToken, async (req, res) => {
+  try {
+    const { keyword } = req.params;
+    
+    const searchQuery = `
+      SELECT 
+        f.*,
+        u.real_name as manager_name,
+        u.phone as manager_phone,
+        -- 车辆数量
+        (SELECT COUNT(*) FROM vehicles v WHERE v.fleet_id = f.fleet_id) as vehicle_count,
+        -- 司机数量
+        (SELECT COUNT(*) FROM users u2 WHERE u2.fleet_id = f.fleet_id AND u2.role IN ('driver', 'manager', 'admin')) as driver_count
+      FROM fleets f
+      LEFT JOIN users u ON f.manager_id = u.user_id
+      WHERE f.fleet_name LIKE ? OR f.fleet_id LIKE ? OR f.description LIKE ?
+      OR u.real_name LIKE ? OR u.phone LIKE ?
+    `;
+    
+    const searchParam = `%${keyword}%`;
+    const [fleets] = await pool.query(searchQuery, [
+      searchParam, searchParam, searchParam, 
+      searchParam, searchParam
+    ]);
+    
+    res.json({
+      success: true,
+      data: fleets
+    });
+  } catch (error) {
+    console.error('搜索车队失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '搜索车队失败'
+    });
+  }
+});
+
+// 根据类型获取车队 - 匹配您的 api.js 中的 /api/fleets/type/:type
+app.get('/api/fleets/type/:type', authenticateToken, async (req, res) => {
+  try {
+    const { type } = req.params;
+    
+    const query = `
+      SELECT 
+        f.*,
+        u.real_name as manager_name,
+        u.phone as manager_phone,
+        (SELECT COUNT(*) FROM vehicles v WHERE v.fleet_id = f.fleet_id) as vehicle_count,
+        (SELECT COUNT(*) FROM users u2 WHERE u2.fleet_id = f.fleet_id AND u2.role IN ('driver', 'manager', 'admin')) as driver_count
+      FROM fleets f
+      LEFT JOIN users u ON f.manager_id = u.user_id
+      WHERE f.fleet_type = ?
+    `;
+    
+    const [fleets] = await pool.query(query, [type]);
+    
+    res.json({
+      success: true,
+      data: fleets
+    });
+  } catch (error) {
+    console.error('获取车队类型失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取车队类型失败'
+    });
+  }
+});
+
+// 根据队长状态获取车队 - 匹配您的 api.js 中的 /api/fleets/manager-status/:hasManager
+app.get('/api/fleets/manager-status/:hasManager', authenticateToken, async (req, res) => {
+  try {
+    const { hasManager } = req.params;
+    
+    let whereClause = '';
+    if (hasManager === 'true' || hasManager === '1') {
+      whereClause = 'WHERE f.manager_id IS NOT NULL';
+    } else {
+      whereClause = 'WHERE f.manager_id IS NULL';
+    }
+    
+    const query = `
+      SELECT 
+        f.*,
+        u.real_name as manager_name,
+        u.phone as manager_phone,
+        (SELECT COUNT(*) FROM vehicles v WHERE v.fleet_id = f.fleet_id) as vehicle_count,
+        (SELECT COUNT(*) FROM users u2 WHERE u2.fleet_id = f.fleet_id AND u2.role IN ('driver', 'manager', 'admin')) as driver_count
+      FROM fleets f
+      LEFT JOIN users u ON f.manager_id = u.user_id
+      ${whereClause}
+    `;
+    
+    const [fleets] = await pool.query(query);
+    
+    res.json({
+      success: true,
+      data: fleets
+    });
+  } catch (error) {
+    console.error('获取车队状态失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取车队状态失败'
+    });
+  }
+});
+
+// 获取管理员车队仪表板数据 - 匹配您的 api.js 中的 /api/admin/fleet-dashboard
+app.get('/api/admin/fleet-dashboard', authenticateToken, requireRole('admin'), async (req, res) => {
+  try {
+    // 获取车队统计数据
+    const statsQuery = `
+      SELECT 
+        (SELECT COUNT(*) FROM fleets) as total_fleets,
+        (SELECT COUNT(*) FROM vehicles) as total_vehicles,
+        (SELECT COUNT(*) FROM users WHERE role IN ('driver', 'manager', 'admin')) as total_drivers,
+        (SELECT COUNT(*) FROM fleets WHERE manager_id IS NULL) as fleets_without_manager,
+        (SELECT COUNT(*) FROM vehicles WHERE status = 'maintenance') as vehicles_in_maintenance,
+        (SELECT COUNT(*) FROM drivers WHERE driver_status = 'off_duty') as drivers_off_duty
+    `;
+    
+    const [stats] = await pool.query(statsQuery);
+    
+    // 获取最近创建的车队
+    const recentFleetsQuery = `
+      SELECT 
+        f.fleet_id,
+        f.fleet_name,
+        f.fleet_type,
+        f.created_at,
+        u.real_name as manager_name,
+        f.vehicle_count,
+        f.driver_count
+      FROM fleets f
+      LEFT JOIN users u ON f.manager_id = u.user_id
+      ORDER BY f.created_at DESC
+      LIMIT 5
+    `;
+    
+    const [recentFleets] = await pool.query(recentFleetsQuery);
+    
+    // 获取车队类型分布
+    const typeDistributionQuery = `
+      SELECT 
+        fleet_type,
+        COUNT(*) as count
+      FROM fleets
+      GROUP BY fleet_type
+    `;
+    
+    const [typeDistribution] = await pool.query(typeDistributionQuery);
+    
+    // 获取车辆状态分布
+    const vehicleStatusQuery = `
+      SELECT 
+        status,
+        COUNT(*) as count
+      FROM vehicles
+      GROUP BY status
+    `;
+    
+    const [vehicleStatus] = await pool.query(vehicleStatusQuery);
+    
+    res.json({
+      success: true,
+      data: {
+        stats: stats[0],
+        recentFleets,
+        typeDistribution,
+        vehicleStatus
+      }
+    });
+  } catch (error) {
+    console.error('获取仪表板数据失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取仪表板数据失败'
+    });
+  }
+});
+
+// 获取车队统计数据 - 匹配您的 api.js 中的 /api/fleets/statistics
+app.get('/api/fleets/statistics', authenticateToken, async (req, res) => {
+  try {
+    const statsQuery = `
+      SELECT 
+        (SELECT COUNT(*) FROM fleets) as totalFleets,
+        (SELECT COUNT(*) FROM vehicles WHERE status = 'available') as totalVehicles,
+        (SELECT COUNT(*) FROM users WHERE role IN ('driver', 'manager', 'admin')) as totalDrivers,
+        (SELECT COUNT(*) FROM fleets WHERE manager_id IS NULL) as fleetsWithoutManager
+    `;
+    
+    const [stats] = await pool.query(statsQuery);
+    
+    res.json({
+      success: true,
+      data: stats[0]
+    });
+  } catch (error) {
+    console.error('获取统计数据失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取统计数据失败'
+    });
+  }
+});
+
+// 获取管理人员列表 - 匹配您的 api.js 中的 /api/users/managers
+app.get('/api/users/managers', authenticateToken, async (req, res) => {
+  try {
+    const { search = '', page = 1, limit = 20 } = req.query;
+    const offset = (page - 1) * limit;
+    
+    let whereClause = 'WHERE role IN ("manager", "admin")';
+    const params = [];
+    
+    if (search) {
+      whereClause += ' AND (real_name LIKE ? OR user_id LIKE ? OR phone LIKE ?)';
+      const searchParam = `%${search}%`;
+      params.push(searchParam, searchParam, searchParam);
+    }
+    
+    // 获取总数
+    const [countResult] = await pool.query(
+      `SELECT COUNT(*) as total FROM users ${whereClause}`,
+      params
+    );
+    const total = countResult[0].total;
+    
+    // 获取数据 - 只选择实际存在的字段
+    const usersQuery = `
+      SELECT 
+        user_id,
+        real_name,
+        role,
+        department,
+        phone,
+        avatar,
+        created_at
+      FROM users
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    
+    params.push(parseInt(limit), offset);
+    const [users] = await pool.query(usersQuery, params);
+    
+    res.json({
+      success: true,
+      data: users,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('获取管理人员列表失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取管理人员列表失败'
+    });
+  }
+});
+
+// 根据队长获取车队 - 匹配您的 api.js 中的 /api/fleets/manager/:managerId
+app.get('/api/fleets/manager/:managerId', authenticateToken, async (req, res) => {
+  try {
+    const { managerId } = req.params;
+    
+    const query = `
+      SELECT 
+        f.*,
+        u.real_name as manager_name,
+        u.phone as manager_phone,
+        (SELECT COUNT(*) FROM vehicles v WHERE v.fleet_id = f.fleet_id) as vehicle_count,
+        (SELECT COUNT(*) FROM users u2 WHERE u2.fleet_id = f.fleet_id AND u2.role IN ('driver', 'manager', 'admin')) as driver_count
+      FROM fleets f
+      LEFT JOIN users u ON f.manager_id = u.user_id
+      WHERE f.manager_id = ?
+    `;
+    
+    const [fleets] = await pool.query(query, [managerId]);
+    
+    res.json({
+      success: true,
+      data: fleets
+    });
+  } catch (error) {
+    console.error('获取队长车队失败:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取队长车队失败'
+    });
+  }
+});
 
 // ==================== 车辆管理模块 ====================
 // 获取所有车辆
