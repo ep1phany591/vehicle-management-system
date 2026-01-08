@@ -205,18 +205,25 @@
 import api from '@/api';
 import { 
   Popup, Form, Field, CellGroup, Button, Icon, Search, Tag, 
-  showToast, showConfirmDialog,ImagePreview, Dialog 
+  ImagePreview, showToast, showConfirmDialog 
 } from 'vant';
 
 export default {
+  name: 'AdminUserManagement',
   components: {
-    [Popup.name]: Popup, [Form.name]: Form, [Field.name]: Field,
-    [CellGroup.name]: CellGroup, [Button.name]: Button, [Icon.name]: Icon,
-    [Search.name]: Search, [Tag.name]: Tag
+    'van-popup': Popup,
+    'van-form': Form,
+    'van-field': Field,
+    'van-cell-group': CellGroup,
+    'van-button': Button,
+    'van-icon': Icon,
+    'van-search': Search,
+    'van-tag': Tag,
+    'van-image-preview': ImagePreview.Component // 修复报错的关键点
   },
   data() {
     return {
-      users: [],
+      users: [], // 始终保持为数组
       searchQuery: '',
       showModal: false,
       isEdit: false,
@@ -239,51 +246,71 @@ export default {
   },
   computed: {
     filteredUsers() {
-      const q = this.searchQuery.toLowerCase();
-      return this.users.filter(u => 
-        (u.real_name + u.phone + u.user_id + (u.position || '')).toLowerCase().includes(q)
-      );
+      // --- 关键修复：增加 this.users 的安全检查 ---
+      if (!Array.isArray(this.users)) return [];
+      
+      const q = this.searchQuery ? this.searchQuery.toLowerCase().trim() : '';
+      if (!q) return this.users;
+
+      return this.users.filter(u => {
+        if (!u) return false;
+        // 使用安全拼接，防止 real_name 等字段为 null 时导致 includes 报错
+        const name = u.real_name || '';
+        const phone = u.phone || '';
+        const id = u.user_id || '';
+        const pos = u.position || '';
+        
+        return (name + phone + id + pos).toLowerCase().includes(q);
+      });
     }
   },
   created() { 
     this.fetchUsers(); 
   },
   methods: {
-    async fetchUsers() {
-      try {
-        const res = await api.user.getAll();
-        this.users = res.success ? res.data : (Array.isArray(res) ? res : []);
-        console.log('用户数据:', this.users);
-      } catch (error) {
-        console.error('获取用户数据失败:', error);
-        showToast('获取用户数据失败');
-      }
-    },
+   async fetchUsers() {
+  try {
+    const res = await api.user.getAll();
+    console.log('📡 原始响应:', res); 
     
-    // 获取头像完整URL
+    if (res && res.success) {
+      this.users = Array.isArray(res.users) ? res.users : (Array.isArray(res.data) ? res.data : []);
+    } else {
+      this.users = Array.isArray(res) ? res : [];
+    }
+    
+    console.log('✅ 最终渲染条数:', this.users.length);
+  } catch (error) {
+    console.error('获取用户数据失败:', error);
+    this.users = []; 
+    showToast('获取数据失败');
+  }
+},
+    
     getAvatarUrl(avatarPath) {
-      if (!avatarPath) return '';
-      // 如果已经是完整URL，直接返回
+      if (!avatarPath || avatarPath === 'null') return '';
       if (avatarPath.startsWith('http')) return avatarPath;
-      // 否则拼接基础URL
       const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
-      return baseUrl + avatarPath;
+      // 确保路径拼接逻辑正确（是否有斜杠）
+      const path = avatarPath.startsWith('/') ? avatarPath : `/${avatarPath}`;
+      return baseUrl + path;
     },
     
-    // 头像加载失败处理
     handleAvatarError(event) {
       const img = event.target;
       img.style.display = 'none';
       const parent = img.parentElement;
+      // 避免重复添加占位符
+      if (parent.querySelector('.avatar-placeholder')) return;
+      
       const placeholder = document.createElement('div');
       placeholder.className = 'avatar-placeholder';
       placeholder.textContent = this.getInitials(img.alt);
       parent.appendChild(placeholder);
     },
     
-    // 获取姓名首字母
     getInitials(name) {
-      if (!name) return '?';
+      if (!name || name === 'undefined') return '?';
       return name.charAt(0).toUpperCase();
     },
     
@@ -292,8 +319,7 @@ export default {
       return map[role] || role;
     },
     
-    // 头像预览
-    previewAvatar(avatarUrl, userName) {
+    previewAvatar(avatarUrl) {
       if (!avatarUrl) {
         showToast('该用户没有设置头像');
         return;
@@ -308,14 +334,9 @@ export default {
       this.avatarFile = null;
       this.avatarPreviewUrl = null;
       this.editingForm = { 
-        user_id: '', 
-        real_name: '', 
-        position: '', 
-        phone: '', 
-        department: '', 
-        role: 'employee',
-        fleet_id: '',
-        avatar: ''
+        user_id: '', real_name: '', position: '', 
+        phone: '', department: '', role: 'employee', 
+        fleet_id: '', avatar: '' 
       };
       this.showModal = true;
     },
@@ -328,7 +349,6 @@ export default {
       this.showModal = true;
     },
     
-    // 头像上传相关方法
     triggerAvatarUpload() {
       this.$refs.avatarInput.click();
     },
@@ -337,84 +357,55 @@ export default {
       const file = event.target.files[0];
       if (!file) return;
       
-      // 验证文件类型和大小
-      const allowedTypes = ['image/jpeg', 'image/png', 'image/jpg'];
-      const maxSize = 5 * 1024 * 1024; // 5MB
-      
-      if (!allowedTypes.includes(file.type)) {
-        showToast('请上传 JPG 或 PNG 格式的图片');
+      if (!['image/jpeg', 'image/png', 'image/jpg'].includes(file.type)) {
+        showToast('请上传图片格式文件');
         return;
       }
       
-      if (file.size > maxSize) {
+      if (file.size > 5 * 1024 * 1024) {
         showToast('图片大小不能超过 5MB');
         return;
       }
       
       this.avatarFile = file;
-      
-      // 生成预览
       const reader = new FileReader();
-      reader.onload = (e) => {
-        this.avatarPreviewUrl = e.target.result;
-      };
+      reader.onload = (e) => { this.avatarPreviewUrl = e.target.result; };
       reader.readAsDataURL(file);
     },
     
-    removeAvatarFile() {
-      this.avatarFile = null;
-      this.avatarPreviewUrl = this.isEdit && this.editingForm.avatar ? 
-        this.getAvatarUrl(this.editingForm.avatar) : null;
-      this.$refs.avatarInput.value = '';
-    },
-    
     async handleSubmit() {
-      if (!this.editingForm.real_name) {
-        showToast('请输入姓名');
-        return;
-      }
-      
-      if (!this.isEdit && !this.editingForm.user_id) {
-        showToast('请输入用户ID');
+      if (!this.editingForm.real_name || (!this.isEdit && !this.editingForm.user_id)) {
+        showToast('请完善必填信息');
         return;
       }
       
       this.isSubmitting = true;
-      
       try {
         const formData = new FormData();
-        
-        // 添加表单字段
         Object.keys(this.editingForm).forEach(key => {
-          if (this.editingForm[key] !== null && this.editingForm[key] !== undefined && this.editingForm[key] !== '') {
-            formData.append(key, this.editingForm[key]);
+          const val = this.editingForm[key];
+          if (val !== null && val !== undefined && val !== '') {
+            formData.append(key, val);
           }
         });
         
-        // 如果有新头像，添加到 FormData
         if (this.avatarFile) {
           formData.append('avatar_file', this.avatarFile);
         }
         
-        let res;
-        if (this.isEdit) {
-          // 编辑用户 - 使用 api 模块，它会自动处理 FormData
-          res = await api.user.updateUser(this.editingForm.user_id, formData);
-        } else {
-          // 新增用户 - 使用 api 模块
-          res = await api.user.add(formData);
-        }
+        const res = this.isEdit 
+          ? await api.user.updateUser(this.editingForm.user_id, formData)
+          : await api.user.add(formData);
         
         if (res && res.success) {
-          showToast({ message: '操作成功', icon: 'passed' });
+          showToast({ message: '操作成功', type: 'success' });
           this.showModal = false;
           this.fetchUsers();
         } else {
           showToast(res?.message || '操作失败');
         }
       } catch (err) {
-        console.error('提交失败:', err);
-        showToast(err.response?.data?.message || '服务器连接失败');
+        showToast(err.response?.data?.message || '连接服务器失败');
       } finally {
         this.isSubmitting = false;
       }
@@ -426,17 +417,20 @@ export default {
         message: `确定要永久删除账号 ${id} 吗？`,
         confirmButtonColor: '#ee0a24'
       }).then(async () => {
-        const res = await api.user.delete(id);
-        if(res && res.success) {
-          showToast('删除成功');
-          this.fetchUsers();
+        try {
+          const res = await api.user.delete(id);
+          if (res && res.success) {
+            showToast('删除成功');
+            this.fetchUsers();
+          }
+        } catch (e) {
+          showToast('删除失败');
         }
       }).catch(() => {});
     }
   }
 };
 </script>
-
 <style scoped>
 /* 核心容器 */
 .admin-container { 

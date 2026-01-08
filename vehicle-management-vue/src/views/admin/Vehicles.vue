@@ -3,7 +3,11 @@
     <!-- 顶部导航 -->
     <div class="header">
       <div class="user-info">
-        <img :src="user.avatar" alt="头像" class="avatar">
+        <img 
+            :src="user.avatar ? getAvatarUrl(user.avatar) : 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" 
+            alt="头像" 
+            class="avatar"
+          >
         <div class="user-details">
           <h3>{{ user.real_name }}</h3>
           <p>车辆管理</p>
@@ -565,7 +569,14 @@ export default {
         this.user = JSON.parse(userData);
       }
     },
-    
+    getAvatarUrl(avatarPath) {
+      if (!avatarPath) return '';
+      // 如果已经是完整URL，直接返回
+      if (avatarPath.startsWith('http')) return avatarPath;
+      // 否则拼接基础URL
+      const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
+      return baseUrl + avatarPath;
+    },
     async loadVehicles() {
       this.loading = true;
       try {
@@ -2402,6 +2413,8 @@ export default {
   
   .action-btn {
     width: 100%;
+
+  
   }
   
   .vehicle-footer {

@@ -243,7 +243,7 @@ export default {
           formData.append('fleet_id', this.form.fleet_id);
         }
         formData.append('captcha', this.form.captcha);
-        formData.append('role', 'employee');
+        formData.append('role', 'driver');
         
         // 如果有头像，添加文件
         if (this.avatarFile) {

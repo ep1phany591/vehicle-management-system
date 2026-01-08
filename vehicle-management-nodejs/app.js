@@ -1,19 +1,52 @@
-// app.js - 主文件
+// app.js - 主文件（更新版，适应现有表结构）
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const mysql = require('mysql2/promise');
-const router = express.Router();
 const multer = require('multer');
 const fs = require('fs');
+const crypto = require('crypto');
 require('dotenv').config();
+
+// 新增依赖
+const svgCaptcha = require('svg-captcha');
+const session = require('express-session');
 
 const app = express();
 
-const svgCaptcha = require('svg-captcha');
-const session = require('express-session');
+// 安全检查：验证环境变量
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.JWT_SECRET) {
+    console.error('❌ 生产环境必须设置JWT_SECRET环境变量');
+    process.exit(1);
+  }
+  if (process.env.JWT_SECRET === 'vehicle-secret-key') {
+    console.error('❌ 生产环境JWT_SECRET不能使用默认值');
+    process.exit(1);
+  }
+} else {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'vehicle-secret-key') {
+    console.warn('⚠️  开发环境建议设置JWT_SECRET环境变量');
+  }
+}
+
+const JWT_SECRET = process.env.JWT_SECRET || 'vehicle-secret-key';
+
+// 配置常量
+const SECURITY_CONFIG = {
+  // 登录尝试限制
+  MAX_LOGIN_ATTEMPTS: 5,
+  LOCKOUT_TIME: 15 * 60 * 1000, // 15分钟
+  // JWT设置
+  JWT_EXPIRY: '24h', // 修改为24小时，更实用
+  // 密码策略
+  MIN_PASSWORD_LENGTH: 8,
+  PASSWORD_REGEX: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,
+  // 手机号验证
+  PHONE_REGEX: /^1[3-9]\d{9}$/,
+};
 
 // 中间件
 // 使用绝对路径定义上传目录
@@ -39,7 +72,7 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(session({
-  secret: 'your_secret_key', 
+  secret: process.env.SESSION_SECRET || 'your_secret_key_should_be_long_and_random',
   resave: false,
   saveUninitialized: false,
   cookie: { 
@@ -61,52 +94,132 @@ const pool = mysql.createPool({
   queueLimit: 0
 });
 
+// 检查表结构并添加缺失字段的函数
+async function checkAndUpdateTableStructure() {
+  try {
+    console.log('🔍 检查数据库表结构...');
+    
+    // 检查users表是否有安全字段
+    const [columns] = await pool.query(`
+      SELECT COLUMN_NAME 
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users'
+    `, [process.env.DB_NAME || 'vehicle_management']);
+    
+    const columnNames = columns.map(col => col.COLUMN_NAME);
+    const neededColumns = ['login_attempts', 'locked_until', 'last_attempt', 'last_login'];
+    
+    for (const column of neededColumns) {
+      if (!columnNames.includes(column)) {
+        console.log(`⚠️  检测到缺失字段: ${column}`);
+        
+        // 根据字段名添加不同的列
+        let addColumnSQL = '';
+        if (column === 'login_attempts') {
+          addColumnSQL = `ALTER TABLE users ADD COLUMN ${column} INT DEFAULT 0 COMMENT '登录尝试次数'`;
+        } else if (['locked_until', 'last_attempt', 'last_login'].includes(column)) {
+          addColumnSQL = `ALTER TABLE users ADD COLUMN ${column} DATETIME NULL COMMENT '${column === 'locked_until' ? '锁定直到时间' : column === 'last_attempt' ? '最后尝试时间' : '最后登录时间'}'`;
+        }
+        
+        if (addColumnSQL) {
+          await pool.query(addColumnSQL);
+          console.log(`✅ 已添加字段: ${column}`);
+        }
+      }
+    }
+    
+    console.log('✅ 数据库表结构检查完成');
+  } catch (error) {
+    console.error('❌ 检查/更新表结构失败:', error.message);
+    // 不阻止程序启动，继续运行
+  }
+}
+
 // 中间件：认证
-const JWT_SECRET = process.env.JWT_SECRET || 'vehicle-secret-key';
+// 中间件：权限检查
+const requireRole = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({ 
+        success: false, 
+        message: '需要认证' 
+      });
+    }
+    
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ 
+        success: false, 
+        message: '权限不足' 
+      });
+    }
+    
+    next();
+  };
+};
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
   
   if (!token) {
-    return res.status(401).json({ success: false, message: '需要认证' });
+    return res.status(401).json({ 
+      success: false, 
+      message: '需要认证' 
+    });
   }
+  
   jwt.verify(token, JWT_SECRET, async (err, payload) => {
     if (err) {
       if (err.name === 'TokenExpiredError') {
-        return res.status(403).json({ success: false, message: 'token已过期' });
+        return res.status(403).json({ 
+          success: false, 
+          message: 'token已过期' 
+        });
       }
       if (err.name === 'JsonWebTokenError') {
-        return res.status(403).json({ success: false, message: 'token签名无效' });
+        return res.status(403).json({ 
+          success: false, 
+          message: 'token签名无效' 
+        });
       }
-      return res.status(403).json({ success: false, message: 'token校验失败' });
+      return res.status(403).json({ 
+        success: false, 
+        message: 'token校验失败' 
+      });
     }
+    
     try {
-      const [users] = await pool.query('SELECT * FROM users WHERE user_id = ?', [payload.userId]);
+      const [users] = await pool.query(
+        'SELECT user_id, real_name, role, phone, department, position, avatar, token_version FROM users WHERE user_id = ?', 
+        [payload.userId]
+      );
+      
       if (!users.length) {
-        return res.status(401).json({ success: false, message: '用户不存在' });
+        return res.status(401).json({ 
+          success: false, 
+          message: '用户不存在' 
+        });
       }
-      req.user = users[0];
+      
+      const user = users[0];
+      
+      // 检查token版本是否有效
+      if (user.token_version !== (payload.version || 0)) {
+        return res.status(403).json({
+          success: false,
+          message: '令牌已失效，请重新登录'
+        });
+      }
+      
+      req.user = user;
       next();
     } catch (dbErr) {
       console.error('查询用户失败:', dbErr);
-      return res.status(500).json({ success: false, message: '服务器内部错误' });
+      return res.status(500).json({ 
+        success: false, 
+        message: '服务器内部错误' 
+      });
     }
   });
-};
-
-// 中间件：权限检查
-const requireRole = (...roles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ success: false, message: '需要认证' });
-    }
-    
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ success: false, message: '权限不足' });
-    }
-    
-    next();
-  };
 };
 
 // ==================== 基础路由 ====================
@@ -134,14 +247,14 @@ app.get('/api/auth/captcha', (req, res) => {
   res.status(200).send(captcha.data);
 });
 
-// ==================== 用户认证模块 ====================
-// 用户登录
+// ==================== 用户登录（兼容版） ====================
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { phone, password } = req.body;
     
-    console.log('📱 登录请求:', { phone, password });
+    console.log('📱 登录请求:', { phone });
     
+    // 1. 基础验证
     if (!phone || !password) {
       return res.status(400).json({
         success: false,
@@ -149,148 +262,395 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
     
+    // 2. 手机号格式验证
+    if (!SECURITY_CONFIG.PHONE_REGEX.test(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: '手机号格式不正确'
+      });
+    }
+    
+    // 3. 查询用户 - 使用动态查询，检查是否有安全字段
+    let queryFields = 'user_id, real_name, password, role, phone, department, position, avatar, token_version';
+    
+    try {
+      // 尝试查询是否有安全字段
+      const [testRows] = await pool.query('SELECT 1 FROM users LIMIT 1');
+      const [columns] = await pool.query(`
+        SELECT COLUMN_NAME 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users' 
+        AND COLUMN_NAME IN ('login_attempts', 'locked_until')
+      `, [process.env.DB_NAME || 'vehicle_management']);
+      
+      const hasSecurityFields = columns.length > 0;
+      if (hasSecurityFields) {
+        queryFields += ', login_attempts, locked_until';
+      }
+      
+      console.log('🔍 安全字段状态:', hasSecurityFields ? '已启用' : '未启用');
+    } catch (error) {
+      console.log('⚠️ 检查安全字段失败，使用基础查询');
+    }
+    
     const [users] = await pool.query(
-      'SELECT * FROM users WHERE phone = ?',
+      `SELECT ${queryFields} FROM users WHERE phone = ?`,
       [phone]
     );
     
-    console.log('🔍 查询到用户数:', users.length);
-    
+    // 4. 统一返回信息，防止用户枚举攻击
     if (users.length === 0) {
-      console.log('⚠️ 用户不存在，自动创建管理员账号...');
+      // 延迟响应，防止时间差攻击
+      await new Promise(resolve => setTimeout(resolve, 100 + Math.random() * 100));
       
-      const hashedPassword = await bcrypt.hash(password, 10);
-      console.log('🔐 新密码哈希:', hashedPassword);
-      
-      await pool.query(
-        "INSERT INTO users (user_id, real_name, password, role, phone, department, position) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ['admin' + Date.now(), '系统管理员', hashedPassword, 'admin', phone, '信息部', '系统管理员']
-      );
-      
-      console.log('✅ 新管理员账号已创建');
-      
-      const [newUsers] = await pool.query(
-        'SELECT * FROM users WHERE phone = ?',
-        [phone]
-      );
-      
-      const user = newUsers[0];
-      
-      const token = jwt.sign(
-        { userId: user.user_id, role: user.role },
-        process.env.JWT_SECRET || 'vehicle-secret-key',
-        { expiresIn: '24h' }
-      );
-      
-      const { password: _, ...userData } = user;
-      
-      return res.json({
-        success: true,
-        user: userData,
-        token,
-        message: '新管理员账号已自动创建'
+      return res.status(401).json({
+        success: false,
+        message: '手机号或密码错误'
       });
     }
     
     const user = users[0];
-    console.log('👤 找到用户:', user.user_id, user.role);
-    console.log('🔑 存储的密码哈希:', user.password);
     
-    console.log('🔄 开始验证密码...');
-    
-    console.log('🔍 哈希算法检查:');
-    console.log('  哈希前缀:', user.password.substring(0, 7));
-    console.log('  盐值位置:', user.password.substring(7, 29));
-    
-    const isValid = await bcrypt.compare(password, user.password);
-    console.log('✅ 密码验证结果:', isValid);
-    
-    if (!isValid) {
-      console.log('⚠️ 密码验证失败，尝试重新生成哈希...');
-      
-      const newHashedPassword = await bcrypt.hash(password, 10);
-      console.log('🔄 重新生成的哈希:', newHashedPassword);
-      
-      await pool.query(
-        'UPDATE users SET password = ? WHERE user_id = ?',
-        [newHashedPassword, user.user_id]
-      );
-      console.log('✅ 密码哈希已更新');
-      
-      const isValidAfterUpdate = await bcrypt.compare(password, newHashedPassword);
-      console.log('✅ 更新后验证结果:', isValidAfterUpdate);
-      
-      if (isValidAfterUpdate) {
-        const token = jwt.sign(
-          { userId: user.user_id, role: user.role },
-          process.env.JWT_SECRET || 'vehicle-secret-key',
-          { expiresIn: '24h' }
-        );
-        
-        const { password: _, ...userData } = user;
-        
-        return res.json({
-          success: true,
-          user: userData,
-          token,
-          message: '密码已重置，登录成功'
-        });
-      }
-      
-      return res.status(401).json({
+    // 5. 检查账户是否被锁定（如果有locked_until字段）
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      return res.status(423).json({
         success: false,
-        message: '密码错误'
+        message: '账户已被锁定，请稍后再试',
+        lockedUntil: user.locked_until
       });
     }
     
-    const token = jwt.sign(
-      { userId: user.user_id, role: user.role },
-      process.env.JWT_SECRET || 'vehicle-secret-key',
-      { expiresIn: '24h' }
+    // 6. 密码验证
+    let isValid = false;
+    try {
+      isValid = await bcrypt.compare(password, user.password);
+    } catch (error) {
+      console.error('密码验证错误:', error);
+      // 延迟响应
+      await new Promise(resolve => setTimeout(resolve, 200 + Math.random() * 100));
+      
+      return res.status(401).json({
+        success: false,
+        message: '手机号或密码错误'
+      });
+    }
+    
+    // 7. 密码错误处理（如果有login_attempts字段）
+    if (!isValid) {
+      if (user.hasOwnProperty('login_attempts')) {
+        const attempts = (user.login_attempts || 0) + 1;
+        
+        // 更新失败次数
+        await pool.query(
+          'UPDATE users SET login_attempts = ?, last_attempt = NOW() WHERE user_id = ?',
+          [attempts, user.user_id]
+        );
+        
+        // 检查是否达到锁定阈值
+        if (attempts >= SECURITY_CONFIG.MAX_LOGIN_ATTEMPTS) {
+          const lockedUntil = new Date(Date.now() + SECURITY_CONFIG.LOCKOUT_TIME);
+          await pool.query(
+            'UPDATE users SET locked_until = ? WHERE user_id = ?',
+            [lockedUntil, user.user_id]
+          );
+          
+          return res.status(423).json({
+            success: false,
+            message: `登录失败次数过多，账户已锁定15分钟`,
+            lockedUntil: lockedUntil
+          });
+        }
+        
+        // 延迟响应
+        await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 200));
+        
+        return res.status(401).json({
+          success: false,
+          message: '手机号或密码错误',
+          remainingAttempts: SECURITY_CONFIG.MAX_LOGIN_ATTEMPTS - attempts
+        });
+      } else {
+        // 没有安全字段，直接返回错误
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        return res.status(401).json({
+          success: false,
+          message: '手机号或密码错误'
+        });
+      }
+    }
+    
+    // 8. 登录成功，重置失败计数（如果有相关字段）
+    const updateFields = ['last_login = NOW()'];
+    const updateValues = [];
+    
+    if (user.hasOwnProperty('login_attempts')) {
+      updateFields.push('login_attempts = 0', 'locked_until = NULL');
+    }
+    
+    await pool.query(
+      `UPDATE users SET ${updateFields.join(', ')} WHERE user_id = ?`,
+      [user.user_id]
     );
     
-    const { password: _, ...userData } = user;
+    // 9. 生成JWT token
+    const token = jwt.sign(
+      { 
+        userId: user.user_id, 
+        role: user.role,
+        version: user.token_version || 0
+      },
+      JWT_SECRET,
+      { 
+        expiresIn: SECURITY_CONFIG.JWT_EXPIRY,
+        algorithm: 'HS256'
+      }
+    );
+    
+    // 10. 移除敏感信息
+    const { password: _, login_attempts, locked_until, token_version, ...userData } = user;
     
     res.json({
       success: true,
       user: userData,
-      token
+      token,
+      expiresIn: 24 * 60 * 60 // 24小时
     });
     
   } catch (error) {
     console.error('❌ 登录错误:', error);
+    
     res.status(500).json({
       success: false,
-      message: error.message || '服务器错误'
+      message: '登录过程中发生错误，请稍后再试'
     });
   }
 });
 
-// 文件上传配置
+// ==================== 文件上传配置 ====================
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, avatarsDir);
+    // 验证目标目录是否存在且安全
+    if (!fs.existsSync(avatarsDir)) {
+      fs.mkdirSync(avatarsDir, { recursive: true });
+    }
+    
+    // 检查目录权限
+    try {
+      fs.accessSync(avatarsDir, fs.constants.W_OK);
+      cb(null, avatarsDir);
+    } catch (err) {
+      cb(new Error('上传目录不可写'));
+    }
   },
   filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, 'avatar-' + uniqueSuffix + ext);
+    // 使用更安全的文件名
+    const userId = req.user ? req.user.user_id : 'anonymous';
+    const timestamp = Date.now();
+    const random = crypto.randomBytes(8).toString('hex');
+    const ext = path.extname(file.originalname).toLowerCase();
+    
+    cb(null, `${userId}_${timestamp}_${random}${ext}`);
   }
 });
 
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { 
+    fileSize: 2 * 1024 * 1024, // 减少到2MB
+    files: 1
+  },
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
     
-    if (mimetype && extname) {
-      cb(null, true);
-    } else {
-      cb(new Error('只支持 JPG、JPEG、PNG 格式的图片'));
+    if (!mimetype || !extname) {
+      return cb(new Error('只支持 JPG、JPEG、PNG 格式的图片'));
     }
+    
+    // 检查文件大小
+    if (file.size > 2 * 1024 * 1024) {
+      return cb(new Error('文件大小不能超过2MB'));
+    }
+    
+    // 检查文件名是否安全
+    const fileName = file.originalname;
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      return cb(new Error('文件名不安全'));
+    }
+    
+    cb(null, true);
+  }
+});
+
+// ==================== 文件上传处理 ====================
+app.post('/api/upload/avatar', 
+  authenticateToken,
+  upload.single('avatar'),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: '请选择要上传的文件'
+        });
+      }
+      
+      // 简单的文件类型检查
+      const ext = path.extname(req.file.originalname).toLowerCase();
+      if (!['.jpg', '.jpeg', '.png'].includes(ext)) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          success: false,
+          message: '只支持 JPG、JPEG、PNG 格式的图片'
+        });
+      }
+      
+      // 更新用户头像信息
+      const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+      await pool.query(
+        'UPDATE users SET avatar = ? WHERE user_id = ?',
+        [avatarUrl, req.user.user_id]
+      );
+      
+      res.json({
+        success: true,
+        url: avatarUrl,
+        message: '头像上传成功'
+      });
+      
+    } catch (error) {
+      console.error('上传错误:', error);
+      
+      // 清理上传失败的文件
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+      }
+      
+      res.status(500).json({
+        success: false,
+        message: '上传失败，请稍后重试'
+      });
+    }
+  }
+);
+
+// ==================== 用户管理路由 ====================
+// 获取当前用户信息
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  try {
+    const [users] = await pool.query(
+      'SELECT user_id, real_name, role, phone, department, position, avatar FROM users WHERE user_id = ?',
+      [req.user.user_id]
+    );
+    
+    if (users.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '用户不存在'
+      });
+    }
+    
+    res.json({
+      success: true,
+      user: users[0]
+    });
+  } catch (error) {
+    console.error('获取用户信息错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取用户信息失败'
+    });
+  }
+});
+
+// 获取所有用户（管理员权限）
+app.get('/api/users', authenticateToken, async (req, res) => {
+  try {
+    // 检查权限
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: '权限不足'
+      });
+    }
+    
+    const [users] = await pool.query(
+      'SELECT user_id, real_name, role, phone, department, position, avatar, fleet_id, created_at FROM users ORDER BY created_at DESC'
+    );
+    
+    res.json({
+      success: true,
+      users: users
+    });
+  } catch (error) {
+    console.error('获取用户列表错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取用户列表失败'
+    });
+  }
+});
+
+// 创建用户（管理员权限）
+app.post('/api/users', authenticateToken, async (req, res) => {
+  try {
+    // 检查权限
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: '权限不足'
+      });
+    }
+    
+    const { real_name, password, role, phone, department, position, fleet_id } = req.body;
+    
+    if (!real_name || !password || !role || !phone) {
+      return res.status(400).json({
+        success: false,
+        message: '姓名、密码、角色和手机号不能为空'
+      });
+    }
+    
+    // 检查手机号是否已存在
+    const [existingUsers] = await pool.query(
+      'SELECT user_id FROM users WHERE phone = ?',
+      [phone]
+    );
+    
+    if (existingUsers.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message: '手机号已被注册'
+      });
+    }
+    
+    // 密码哈希
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    // 生成用户ID
+    const userId = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    await pool.query(
+      "INSERT INTO users (user_id, real_name, password, role, phone, department, position, fleet_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [userId, real_name, hashedPassword, role, phone, department || null, position || null, fleet_id || null]
+    );
+    
+    console.log('✅ 用户账号已创建:', userId);
+    
+    res.json({
+      success: true,
+      message: '用户创建成功',
+      userId: userId
+    });
+    
+  } catch (error) {
+    console.error('❌ 创建用户错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '创建用户失败'
+    });
   }
 });
 // ==================== 司机个人统计 ====================
