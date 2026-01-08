@@ -156,23 +156,21 @@ export default {
       data: []
     });
 
-        const getAvatarUrl = (path) => {
-      if (!path) return 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg';
+        const getAvatarUrl = (avatarPath) => {
+  if (!avatarPath) return '';
   
-  // 如果已经是完整路径，直接返回
-  if (path.startsWith('http')) return path;
+  // 如果已经是完整URL，直接返回
+  if (avatarPath.startsWith('http')) return avatarPath;
   
-  // 处理不同的路径格式
+  // 否则拼接基础URL
   const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
   
-  // 如果路径以斜杠开头，直接拼接
-  if (path.startsWith('/')) {
-    return baseUrl + path;
-  } else {
-    // 否则按默认头像路径拼接
-    return `${baseUrl}/uploads/avatars/${path}`;
-  }
-    };
+  // 确保baseUrl以斜杠结尾，且avatarPath不以斜杠开头（避免双斜杠）
+  const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+  const normalizedPath = avatarPath.startsWith('/') ? avatarPath.slice(1) : avatarPath;
+  
+  return normalizedBaseUrl + normalizedPath;
+};
     // 计算属性 - 会自动更新
     const stats = computed(() => result.value.stats || {
       total: 0,

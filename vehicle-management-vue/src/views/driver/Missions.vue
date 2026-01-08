@@ -2,7 +2,11 @@
   <div class="driver-missions">
     <div class="header">
       <div class="user-info">
-        <img :src="user.avatar || 'https://via.placeholder.com/60'" alt="头像" class="avatar">
+        <img 
+            :src="user.avatar ? getAvatarUrl(user.avatar) : 'https://fastly.jsdelivr.net/npm/@vant/assets/cat.jpeg'" 
+            alt="头像" 
+            class="avatar"
+          >
         <div class="user-details">
           <h3>{{ user.real_name }}</h3>
           <p>司机任务中心</p>
@@ -196,7 +200,14 @@ export default {
       const userData = localStorage.getItem('user');
       if (userData) this.user = JSON.parse(userData);
     },
-
+getAvatarUrl(avatarPath) {
+      if (!avatarPath) return '';
+      // 如果已经是完整URL，直接返回
+      if (avatarPath.startsWith('http')) return avatarPath;
+      // 否则拼接基础URL
+      const baseUrl = process.env.VUE_APP_API_BASE_URL || 'http://localhost:3000';
+      return baseUrl + avatarPath;
+    },
     // 1. 获取统计数据 (同步 app.js 逻辑)
     async loadDriverStats() {
       try {
